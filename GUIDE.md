@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/ollama_scanner.png" alt="OLLAMA REMOTE SERVER SCANNER" width="600">
+</p>
+
 Ollama Scanner v4.2 – Installation & Usage Guide
 
 This tool scans IP ranges for open LLM servers (Ollama, LM Studio, TextGen WebUI) and reports available models, loaded processes, and model configurations.
