@@ -1,16 +1,3 @@
-requirements.txt
-
-```
-aiohttp>=3.8.0
-tqdm>=4.65.0
-```
-
-Note: Python 3.7 or higher is required. All other modules (asyncio, json, ipaddress, etc.) are part of the standard library.
-
----
-
-GUIDE.md
-
 Ollama Scanner v4.2 – Installation & Usage Guide
 
 This tool scans IP ranges for open LLM servers (Ollama, LM Studio, TextGen WebUI) and reports available models, loaded processes, and model configurations.
