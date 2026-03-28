@@ -44,19 +44,28 @@ Where <target> can be:
 
 Command-Line Options
 
-Argument Description
-range IP range to scan (if not using --file).
 -f, --file File containing IP addresses/ranges (one per line).
+
 -p, --port Port to scan (default: 11434).
+
 -t, --timeout Connection timeout in seconds (default: 5.0).
+
 -c, --concurrent Maximum concurrent connections (default: 100).
+
 -r, --retries Number of retry attempts per target (default: 3).
+
 -d, --retry-delay Base delay between retries (seconds, default: 0.5).
+
 -o, --output Base name for output files (JSON report + TXT list).
+
 --deep Perform deep scan: query loaded models and model configurations.
+
 -v, --verbose Enable debug logging.
+
 --no-progress Suppress progress display.
+
 --no-ssl-verify Disable SSL certificate verification (for HTTPS servers).
+
 --disable-dns-cache Disable DNS caching (default is enabled).
 
 Examples
@@ -99,7 +108,9 @@ python Ollama_Scanner_v4.2.py 172.16.0.0/16 -c 200 -t 3
 Output
 
 · Standard output (stdout): Discovered servers and model lists are printed in real‑time.
+
 · Standard error (stderr): Progress, statistics, and logs are displayed.
+
 · Reports: If -o is specified, a JSON file with all details and a plain text list of URLs are saved.
 
 Important Disclaimer
@@ -110,15 +121,12 @@ Scanning networks without explicit permission may violate local laws and regulat
 Troubleshooting
 
 · tqdm not installed: The script will work but progress will be displayed as text.
+
 · High memory usage: For extremely large ranges (e.g., /8), consider splitting into smaller ranges.
+
 · Timeout errors: Increase -t or reduce -c if the network is slow.
+
 · SSL errors: Use --no-ssl-verify if scanning servers with self‑signed certificates.
-
-For additional help, run:
-
-```bash
-python Ollama_Scanner_v4.2.py -h
-```
 
 ---
 
