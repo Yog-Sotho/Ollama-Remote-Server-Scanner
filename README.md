@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="asseta/ollama_scanner.png" alt="OLLAMA REMOTE SERVER SCANNER" width="600">
+  <img src="assets/ollama_scanner.png" alt="OLLAMA REMOTE SERVER SCANNER" width="600">
 </p>
 
 # OLLAMA REMOTE SERVER SCANNER
