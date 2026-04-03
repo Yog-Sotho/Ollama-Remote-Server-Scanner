@@ -269,21 +269,21 @@ def parse_ip_from_input(input_source: str, is_file: bool = False) -> Iterator[Tu
 
         logger.info(f"Reading IP ranges from file: {input_source}")
         with open(input_source, 'r', encoding='utf-8') as f:
-            lines = [line.strip() for line in f if line.strip() and not line.startswith('#')]
-
-        for line_num, line in enumerate(lines, 1):
-            try:
-                expanded = validate_ip_range_static(line)
-                for ip in expanded:
-                    yield ip
-                logger.debug(f"Line {line_num}: '{line}' -> {len(expanded)} IPs")
-            except ValueError as e:
-                logger.warning(f"Skipping invalid line {line_num} ('{line}'): {e}")
+            for line_num, line in enumerate(f, 1):
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                try:
+                    count = 0
+                    for ip in validate_ip_range_static(line):
+                        yield ip
+                        count += 1
+                    logger.debug(f"Line {line_num}: '{line}' -> {count} IPs")
+                except ValueError as e:
+                    logger.warning(f"Skipping invalid line {line_num} ('{line}'): {e}")
     else:
         # Single range from command line
-        ips = validate_ip_range_static(input_source)
-        for ip in ips:
-            yield ip
+        yield from validate_ip_range_static(input_source)
 
 
 class OllamaScanner:
