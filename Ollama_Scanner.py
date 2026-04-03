@@ -74,6 +74,17 @@ class ScanResult:
     status: ScanStatus
 
 
+def safe_display(text: str, max_len: int = 48) -> str:
+    """
+    Safely truncate string for logging to prevent leaking full secrets.
+    Default max_len of 48 accounts for long IPv6 addresses with ports.
+    """
+    if len(text) <= max_len:
+        return text
+    # Show only the first 8 characters of very long strings to protect potential secrets
+    return f"{text[:8]}...[truncated, len={len(text)}]"
+
+
 def format_target_url(ip: str, port: int) -> str:
     """Safely construct URL string handling both IPv4 and IPv6 formats."""
     try:
@@ -93,6 +104,9 @@ def validate_ip_range_static(ip_range: str) -> List[Tuple[str, str]]:
     """
     if not ip_range.strip():
         raise ValueError("Empty IP range provided")
+
+    # Security: Truncate display string to prevent potential leak of full secrets if mis-parsed
+    ip_display = safe_display(ip_range)
         
     # Try CIDR notation first (both IPv4 and IPv6)
     try:
@@ -103,7 +117,7 @@ def validate_ip_range_static(ip_range: str) -> List[Tuple[str, str]]:
             network.subnet_of(IPv4Network('192.168.0.0/16'))
         ])
         if not private_check:
-            logger.warning(f"⚠️  Scanning PUBLIC IPv4 range: {ip_range}. Ensure you have permission!")
+            logger.warning(f"⚠️  Scanning PUBLIC IPv4 range: {ip_display}. Ensure you have permission!")
         return [(str(ip), 'IPv4') for ip in network]
     except ValueError:
         pass
@@ -112,7 +126,7 @@ def validate_ip_range_static(ip_range: str) -> List[Tuple[str, str]]:
         network = IPv6Network(ip_range, strict=False)
         is_private = network.subnet_of(IPv6Network('fc00::/7'))
         if not is_private:
-            logger.warning(f"⚠️  Scanning PUBLIC IPv6 range: {ip_range}. Ensure you have permission!")
+            logger.warning(f"⚠️  Scanning PUBLIC IPv6 range: {ip_display}. Ensure you have permission!")
         return [(str(ip), 'IPv6') for ip in network]
     except ValueError:
         pass
@@ -121,19 +135,19 @@ def validate_ip_range_static(ip_range: str) -> List[Tuple[str, str]]:
     if '-' in ip_range:
         parts = ip_range.split('-')
         if len(parts) != 2:
-            raise ValueError(f"Invalid range format: {ip_range}")
+            raise ValueError(f"Invalid range format: {ip_display}")
         start_ip_str, end_part = parts[0].strip(), parts[1].strip()
         
         try:
             start_ip = IPv4Address(start_ip_str)
         except AddressValueError:
-            raise ValueError(f"Invalid start IP: {start_ip_str}")
+            raise ValueError(f"Invalid start IP: {safe_display(start_ip_str)}")
             
         if '.' in end_part:
             try:
                 end_ip = IPv4Address(end_part)
             except AddressValueError:
-                raise ValueError(f"Invalid end IP: {end_part}")
+                raise ValueError(f"Invalid end IP: {safe_display(end_part)}")
             start_int = int(start_ip)
             end_int = int(end_ip)
             if start_int > end_int:
@@ -143,7 +157,7 @@ def validate_ip_range_static(ip_range: str) -> List[Tuple[str, str]]:
             try:
                 end_suffix = int(end_part)
             except ValueError:
-                raise ValueError(f"Invalid end suffix: {end_part}")
+                raise ValueError(f"Invalid end suffix: {safe_display(end_part)}")
             base_parts = start_ip_str.split('.')
             start_num = int(base_parts[-1])
             base = '.'.join(base_parts[:-1])
@@ -172,7 +186,7 @@ def validate_ip_range_static(ip_range: str) -> List[Tuple[str, str]]:
     except AddressValueError:
         pass
         
-    raise ValueError(f"Invalid IP address or range: {ip_range}")
+    raise ValueError(f"Invalid IP address or range: {ip_display}")
 
 
 def parse_ip_from_input(input_source: str, is_file: bool = False) -> Iterator[Tuple[str, str]]:
@@ -198,13 +212,15 @@ def parse_ip_from_input(input_source: str, is_file: bool = False) -> Iterator[Tu
             for line_num, line in enumerate(f, 1):
                 line = line.strip()
                 if line and not line.startswith('#'):
+                    # Security: Truncate logging to prevent sensitive data leakage
+                    line_display = safe_display(line)
                     try:
                         expanded = validate_ip_range_static(line)
                         for ip in expanded:
                             yield ip
-                        logger.debug(f"Line {line_num}: '{line}' -> {len(expanded)} IPs")
+                        logger.debug(f"Line {line_num}: '{line_display}' -> {len(expanded)} IPs")
                     except ValueError as e:
-                        logger.warning(f"Skipping invalid line {line_num} ('{line}'): {e}")
+                        logger.warning(f"Skipping invalid line {line_num} ('{line_display}'): {e}")
     else:
         # Single range from command line
         ips = validate_ip_range_static(input_source)
