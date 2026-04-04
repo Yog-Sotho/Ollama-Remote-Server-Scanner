@@ -12,6 +12,7 @@ Author: Yog-Sotho
 import argparse
 import asyncio
 import json
+import re
 import sys
 import os
 from typing import List, Tuple, Optional, Dict, Any, Iterator, AsyncIterator
@@ -73,6 +74,10 @@ class ScanResult:
     status: ScanStatus
 
 
+# Regex to match ANSI escape sequences (compiled once at module level for performance)
+ANSI_ESCAPE = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+
+
 def safe_display(text: str, max_len: int = 48) -> str:
     """
     Safely truncate string for logging to prevent leaking full secrets.
@@ -82,6 +87,20 @@ def safe_display(text: str, max_len: int = 48) -> str:
         return text
     # Show only the first 8 characters of very long strings to protect potential secrets
     return f"{text[:8]}...[truncated, len={len(text)}]"
+
+
+def sanitize_text(text: str) -> str:
+    """
+    Remove ANSI escape sequences and non-printable control characters
+    to prevent terminal injection attacks from remote server data.
+    """
+    if not isinstance(text, str):
+        return text
+    # Remove ANSI escape sequences
+    text = ANSI_ESCAPE.sub('', text)
+    # Remove non-printable control characters except common safe whitespace (\n, \t)
+    # Note: \r is excluded to prevent line-overwrite deception in terminals
+    return "".join(ch for ch in text if ch.isprintable() or ch in "\n\t")
 
 
 def format_target_url(ip: str, port: int) -> str:
@@ -320,7 +339,7 @@ class OllamaScanner:
                             try:
                                 data = await response.json()
                                 if 'models' in data:
-                                    models = [model.get('name', 'unknown') for model in data['models']]
+                                    models = [sanitize_text(model.get('name', 'unknown')) for model in data['models']]
                                     self.stats["successful_queries"] += 1
                                     self.stats[ServerType.OLLAMA.value + "_count"] += 1
                                     return (ServerType.OLLAMA, models, ScanStatus.SUCCESS)
@@ -358,7 +377,7 @@ class OllamaScanner:
                             try:
                                 data = await response.json()
                                 if 'data' in data:
-                                    models = [m.get('id', m.get('name', 'unknown')) for m in data['data']]
+                                    models = [sanitize_text(m.get('id', m.get('name', 'unknown'))) for m in data['data']]
                                     self.stats[ServerType.LM_STUDIO.value + "_count"] += 1
                                     return (ServerType.LM_STUDIO, models, ScanStatus.SUCCESS)
                             except aiohttp.ContentTypeError:
@@ -392,7 +411,7 @@ class OllamaScanner:
                         if response.status == 200:
                             try:
                                 data = await response.json()
-                                models = [data.get('loading_model', data.get('model_name', 'unknown'))]
+                                models = [sanitize_text(data.get('loading_model', data.get('model_name', 'unknown')))]
                                 self.stats[ServerType.TEXTGEN_WEBUI.value + "_count"] += 1
                                 return (ServerType.TEXTGEN_WEBUI, models, ScanStatus.SUCCESS)
                             except aiohttp.ContentTypeError:
@@ -438,6 +457,10 @@ class OllamaScanner:
                         try:
                             data = await response.json()
                             processes = data.get('models', [])
+                            # Sanitize process names to prevent terminal injection
+                            for proc in processes:
+                                if 'name' in proc:
+                                    proc['name'] = sanitize_text(proc['name'])
                             self.stats["process_status_success"] += 1
                             return (processes, ScanStatus.SUCCESS)
                         except aiohttp.ContentTypeError:
@@ -493,9 +516,9 @@ class OllamaScanner:
                         try:
                             data = await response.json()
                             config = {
-                                "system_prompt": data.get("system", ""),
-                                "parameters": data.get("parameters", ""),
-                                "template": data.get("template", "")
+                                "system_prompt": sanitize_text(data.get("system", "")),
+                                "parameters": sanitize_text(data.get("parameters", "")),
+                                "template": sanitize_text(data.get("template", ""))
                             }
                             self.stats["model_info_success"] += 1
                             return (config, ScanStatus.SUCCESS)
