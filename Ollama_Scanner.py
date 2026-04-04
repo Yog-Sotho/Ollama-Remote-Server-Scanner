@@ -12,6 +12,7 @@ Author: Yog-Sotho
 import argparse
 import asyncio
 import json
+import re
 import sys
 import os
 from typing import List, Tuple, Optional, Dict, Any, Iterator, AsyncIterator
@@ -74,6 +75,10 @@ class ScanResult:
     status: ScanStatus
 
 
+# Regex to match ANSI escape sequences (compiled once at module level for performance)
+ANSI_ESCAPE = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+
+
 def safe_display(text: str, max_len: int = 48) -> str:
     """
     Safely truncate string for logging to prevent leaking full secrets.
@@ -83,6 +88,20 @@ def safe_display(text: str, max_len: int = 48) -> str:
         return text
     # Show only the first 8 characters of very long strings to protect potential secrets
     return f"{text[:8]}...[truncated, len={len(text)}]"
+
+
+def sanitize_text(text: str) -> str:
+    """
+    Remove ANSI escape sequences and non-printable control characters
+    to prevent terminal injection attacks from remote server data.
+    """
+    if not isinstance(text, str):
+        return text
+    # Remove ANSI escape sequences
+    text = ANSI_ESCAPE.sub('', text)
+    # Remove non-printable control characters except common safe whitespace (\n, \t)
+    # Note: \r is excluded to prevent line-overwrite deception in terminals
+    return "".join(ch for ch in text if ch.isprintable() or ch in "\n\t")
 
 
 def format_target_url(ip: str, port: int) -> str:
@@ -352,7 +371,7 @@ class OllamaScanner:
         url_tags = f"http://{ip}:{port}/api/tags"
         ollama_models = await self._single_probe_retry(
             session, url_tags, 
-            lambda d: [m.get('name', 'unknown') for m in d.get('models', [])],
+            lambda d: [sanitize_text(m.get('name', 'unknown')) for m in d.get('models', [])],
             timeout_val, headers, ssl_setting
         )
         if ollama_models is not None:
@@ -364,7 +383,7 @@ class OllamaScanner:
         url_models = f"http://{ip}:{port}/v1/models"
         lm_models = await self._single_probe_retry(
             session, url_models,
-            lambda d: [m.get('id', m.get('name', 'unknown')) for m in d.get('data', [])],
+            lambda d: [sanitize_text(m.get('id', m.get('name', 'unknown'))) for m in d.get('data', [])],
             timeout_val, headers, ssl_setting
         )
         if lm_models is not None:
@@ -376,7 +395,7 @@ class OllamaScanner:
         url_info = f"http://{ip}:{port}/api/info"
         tg_models = await self._single_probe_retry(
             session, url_info,
-            lambda d: [d.get('loading_model', d.get('model_name', 'unknown'))],
+            lambda d: [sanitize_text(d.get('loading_model', d.get('model_name', 'unknown')))],
             timeout_val, headers, ssl_setting
         )
         if tg_models is not None:
@@ -411,6 +430,10 @@ class OllamaScanner:
                         try:
                             data = await response.json()
                             processes = data.get('models', [])
+                            # Sanitize process names to prevent terminal injection
+                            for proc in processes:
+                                if 'name' in proc:
+                                    proc['name'] = sanitize_text(proc['name'])
                             self.stats["process_status_success"] += 1
                             return (processes, ScanStatus.SUCCESS)
                         except aiohttp.ContentTypeError:
@@ -469,9 +492,9 @@ class OllamaScanner:
                         try:
                             data = await response.json()
                             config = {
-                                "system_prompt": data.get("system", ""),
-                                "parameters": data.get("parameters", ""),
-                                "template": data.get("template", "")
+                                "system_prompt": sanitize_text(data.get("system", "")),
+                                "parameters": sanitize_text(data.get("parameters", "")),
+                                "template": sanitize_text(data.get("template", ""))
                             }
                             self.stats["model_info_success"] += 1
                             return (config, ScanStatus.SUCCESS)
