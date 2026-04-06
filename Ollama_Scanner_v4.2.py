@@ -739,8 +739,8 @@ class OllamaScanner:
         successes = 0
         
         connector = aiohttp.TCPConnector(
-            limit=256,
-            limit_per_host=10,
+            limit=self.max_concurrent + 50,
+            limit_per_host=20,
             ttl_dns_cache=300 if self.enable_dns_cache else None
         )
         timeout_obj = aiohttp.ClientTimeout(total=self.timeout, connect=self.timeout / 2)
@@ -759,17 +759,29 @@ class OllamaScanner:
         ) as session:
             ip_iterator = parse_ip_from_input(input_source, is_file=is_file)
             
-            # FIX 5.1-5.2: Process batches sequentially instead of collecting all
-            async for batch in self._batch_iterator(ip_iterator, batch_size=batch_size):
-                tasks = [
-                    self.scan_single_ip(ip, version, port, session, deep_scan)
-                    for ip, version in batch
-                ]
-                
-                # Process tasks for this batch
-                for coro in asyncio.as_completed(tasks):
+            # Sliding window concurrency model: maintains continuous task flow without batching
+            pending = set()
+
+            while True:
+                # Refill task pool up to max_concurrent
+                while len(pending) < self.max_concurrent:
                     try:
-                        result = await coro
+                        ip_info = next(ip_iterator)
+                        ip, version = ip_info
+                        task = asyncio.create_task(self.scan_single_ip(ip, version, port, session, deep_scan))
+                        pending.add(task)
+                    except StopIteration:
+                        break
+                
+                if not pending:
+                    break
+
+                # Wait for any task to complete
+                done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+
+                for task in done:
+                    try:
+                        result = await task
                         completed += 1
                         
                         if result:
@@ -814,11 +826,12 @@ class OllamaScanner:
                                   end='', flush=True, file=sys.stderr)
                                   
                     except asyncio.CancelledError:
-                        break
+                        for p_task in pending:
+                            p_task.cancel()
+                        raise
                     
                     except Exception as e:
-                        # FIX 6.4: Log exception specifically
-                        logger.error(f"Error processing task in batch: {e}")
+                        logger.error(f"Error processing task: {e}")
                         continue
         
         if progress_bar:
