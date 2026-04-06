@@ -129,12 +129,7 @@ def validate_ip_range_static(ip_range: str) -> Iterator[Tuple[str, str]]:
     # Try CIDR notation first (both IPv4 and IPv6)
     try:
         network = IPv4Network(ip_range, strict=False)
-        private_check = any([
-            network.subnet_of(IPv4Network('10.0.0.0/8')),
-            network.subnet_of(IPv4Network('172.16.0.0/12')),
-            network.subnet_of(IPv4Network('192.168.0.0/16'))
-        ])
-        if not private_check:
+        if not network.is_private:
             logger.warning(f"⚠️  Scanning PUBLIC IPv4 range: {ip_display}. Ensure you have permission!")
         for ip in network:
             yield (str(ip), 'IPv4')
@@ -144,8 +139,7 @@ def validate_ip_range_static(ip_range: str) -> Iterator[Tuple[str, str]]:
         
     try:
         network = IPv6Network(ip_range, strict=False)
-        is_private = network.subnet_of(IPv6Network('fc00::/7'))
-        if not is_private:
+        if not network.is_private:
             logger.warning(f"⚠️  Scanning PUBLIC IPv6 range: {ip_display}. Ensure you have permission!")
         for ip in network:
             yield (str(ip), 'IPv6')
@@ -379,9 +373,10 @@ class OllamaScanner:
         Semaphore acquired per-request, not held across all probes
         Per-endpoint retry logic
         """
-        url_tags = f"http://{ip}:{port}/api/tags"
-        url_models = f"http://{ip}:{port}/v1/models"
-        url_info = f"http://{ip}:{port}/api/info"
+        base_url = format_target_url(ip, port)
+        url_tags = f"{base_url}/api/tags"
+        url_models = f"{base_url}/v1/models"
+        url_info = f"{base_url}/api/info"
         headers = {'User-Agent': 'LLMScanner/4.2'}
         ssl_setting = not self.disable_ssl_verify
         
@@ -397,7 +392,8 @@ class OllamaScanner:
                         url_tags,
                         headers=headers,
                         ssl=ssl_setting,
-                        timeout=aiohttp.ClientTimeout(total=self.timeout, connect=self.timeout / 2)
+                        timeout=aiohttp.ClientTimeout(total=self.timeout, connect=self.timeout / 2),
+                        allow_redirects=False
                     ) as response:
                         if response.status == 200:
                             try:
@@ -435,7 +431,8 @@ class OllamaScanner:
                         url_models,
                         headers=headers,
                         ssl=ssl_setting,
-                        timeout=aiohttp.ClientTimeout(total=self.timeout, connect=self.timeout / 2)
+                        timeout=aiohttp.ClientTimeout(total=self.timeout, connect=self.timeout / 2),
+                        allow_redirects=False
                     ) as response:
                         if response.status == 200:
                             try:
@@ -470,7 +467,8 @@ class OllamaScanner:
                         url_info,
                         headers=headers,
                         ssl=ssl_setting,
-                        timeout=aiohttp.ClientTimeout(total=self.timeout, connect=self.timeout / 2)
+                        timeout=aiohttp.ClientTimeout(total=self.timeout, connect=self.timeout / 2),
+                        allow_redirects=False
                     ) as response:
                         if response.status == 200:
                             try:
@@ -505,7 +503,7 @@ class OllamaScanner:
         session: aiohttp.ClientSession
     ) -> Tuple[Optional[List[Dict]], ScanStatus]:
         """Get currently loaded models from Ollama server (/api/ps) with retry logic"""
-        url = f"http://{ip}:{port}/api/ps"
+        url = f"{format_target_url(ip, port)}/api/ps"
         headers = {'User-Agent': 'LLMScanner/4.2', 'Accept': 'application/json'}
         ssl_setting = not self.disable_ssl_verify
         
@@ -515,7 +513,8 @@ class OllamaScanner:
                     url,
                     headers=headers,
                     ssl=ssl_setting,
-                    timeout=aiohttp.ClientTimeout(total=self.timeout, connect=self.timeout / 2)
+                    timeout=aiohttp.ClientTimeout(total=self.timeout, connect=self.timeout / 2),
+                    allow_redirects=False
                 ) as response:
                     if response.status == 200:
                         try:
@@ -558,7 +557,7 @@ class OllamaScanner:
         model_name: str
     ) -> Tuple[Optional[Dict], ScanStatus]:
         """Get model configuration details from Ollama server (/api/show) with retry logic"""
-        url = f"http://{ip}:{port}/api/show"
+        url = f"{format_target_url(ip, port)}/api/show"
         headers = {
             'User-Agent': 'LLMScanner/4.2',
             'Content-Type': 'application/json',
@@ -574,7 +573,8 @@ class OllamaScanner:
                     headers=headers,
                     json=payload,
                     ssl=ssl_setting,
-                    timeout=aiohttp.ClientTimeout(total=self.timeout, connect=self.timeout / 2)
+                    timeout=aiohttp.ClientTimeout(total=self.timeout, connect=self.timeout / 2),
+                    allow_redirects=False
                 ) as response:
                     if response.status == 200:
                         try:
