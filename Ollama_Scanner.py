@@ -114,12 +114,12 @@ def format_target_url(ip: str, port: int) -> str:
     return f"http://{ip}:{port}"
 
 
-def validate_ip_range_static(ip_range: str) -> List[Tuple[str, str]]:
+def validate_ip_range_static(ip_range: str) -> Iterator[Tuple[str, str]]:
     """
     Validate and expand a single IP range into individual IPs
     
     Static method - does not require scanner instance.
-    Returns: List of tuples (ip_string, ip_version)
+    Returns: Iterator of tuples (ip_string, ip_version)
     """
     if not ip_range.strip():
         raise ValueError("Empty IP range provided")
@@ -130,23 +130,21 @@ def validate_ip_range_static(ip_range: str) -> List[Tuple[str, str]]:
     # Try CIDR notation first (both IPv4 and IPv6)
     try:
         network = IPv4Network(ip_range, strict=False)
-        private_check = any([
-            network.subnet_of(IPv4Network('10.0.0.0/8')),
-            network.subnet_of(IPv4Network('172.16.0.0/12')),
-            network.subnet_of(IPv4Network('192.168.0.0/16'))
-        ])
-        if not private_check:
+        if not network.is_private:
             logger.warning(f"⚠️  Scanning PUBLIC IPv4 range: {ip_display}. Ensure you have permission!")
-        return [(str(ip), 'IPv4') for ip in network]
+        for ip in network:
+            yield (str(ip), 'IPv4')
+        return
     except ValueError:
         pass
         
     try:
         network = IPv6Network(ip_range, strict=False)
-        is_private = network.subnet_of(IPv6Network('fc00::/7'))
-        if not is_private:
+        if not network.is_private:
             logger.warning(f"⚠️  Scanning PUBLIC IPv6 range: {ip_display}. Ensure you have permission!")
-        return [(str(ip), 'IPv6') for ip in network]
+        for ip in network:
+            yield (str(ip), 'IPv6')
+        return
     except ValueError:
         pass
     
@@ -171,7 +169,9 @@ def validate_ip_range_static(ip_range: str) -> List[Tuple[str, str]]:
             end_int = int(end_ip)
             if start_int > end_int:
                 raise ValueError("Start IP cannot be greater than end IP")
-            return [(str(IPv4Address(i)), 'IPv4') for i in range(start_int, end_int + 1)]
+            for i in range(start_int, end_int + 1):
+                yield (str(IPv4Address(i)), 'IPv4')
+            return
         else:
             try:
                 end_suffix = int(end_part)
@@ -182,26 +182,27 @@ def validate_ip_range_static(ip_range: str) -> List[Tuple[str, str]]:
             base = '.'.join(base_parts[:-1])
             if end_suffix < start_num:
                 raise ValueError("End suffix cannot be less than start suffix")
-            ips = []
             for i in range(start_num, end_suffix + 1):
                 ip_candidate = f"{base}.{i}"
                 try:
                     IPv4Address(ip_candidate)
-                    ips.append((ip_candidate, 'IPv4'))
+                    yield (ip_candidate, 'IPv4')
                 except AddressValueError:
                     continue
-            return ips
+            return
             
     # Single IP (try IPv4 first)
     try:
         IPv4Address(ip_range.strip())
-        return [(ip_range.strip(), 'IPv4')]
+        yield (ip_range.strip(), 'IPv4')
+        return
     except AddressValueError:
         pass
         
     try:
         IPv6Address(ip_range.strip())
-        return [(ip_range.strip(), 'IPv6')]
+        yield (ip_range.strip(), 'IPv6')
+        return
     except AddressValueError:
         pass
         
@@ -324,7 +325,8 @@ class OllamaScanner:
                         url,
                         headers=headers,
                         ssl=ssl_setting,
-                        timeout=timeout_val
+                        timeout=timeout_val,
+                        allow_redirects=False
                     ) as response:
                         if response.status == 200:
                             try:
@@ -368,7 +370,7 @@ class OllamaScanner:
         timeout_val = aiohttp.ClientTimeout(total=self.timeout, connect=1.5) 
         
         # Try Ollama first
-        url_tags = f"http://{ip}:{port}/api/tags"
+        url_tags = f"{format_target_url(ip, port)}/api/tags"
         ollama_models = await self._single_probe_retry(
             session, url_tags, 
             lambda d: [sanitize_text(m.get('name', 'unknown')) for m in d.get('models', [])],
@@ -380,7 +382,7 @@ class OllamaScanner:
             return (ServerType.OLLAMA, ollama_models, ScanStatus.SUCCESS)
             
         # Try LM Studio
-        url_models = f"http://{ip}:{port}/v1/models"
+        url_models = f"{format_target_url(ip, port)}/v1/models"
         lm_models = await self._single_probe_retry(
             session, url_models,
             lambda d: [sanitize_text(m.get('id', m.get('name', 'unknown'))) for m in d.get('data', [])],
@@ -392,7 +394,7 @@ class OllamaScanner:
             return (ServerType.LM_STUDIO, lm_models, ScanStatus.SUCCESS)
             
         # Try TextGen WebUI
-        url_info = f"http://{ip}:{port}/api/info"
+        url_info = f"{format_target_url(ip, port)}/api/info"
         tg_models = await self._single_probe_retry(
             session, url_info,
             lambda d: [sanitize_text(d.get('loading_model', d.get('model_name', 'unknown')))],
@@ -413,7 +415,7 @@ class OllamaScanner:
         session: aiohttp.ClientSession
     ) -> Tuple[List[Dict], ScanStatus]:
         """Get currently loaded models from Ollama server (/api/ps) with retry logic"""
-        url = f"http://{ip}:{port}/api/ps"
+        url = f"{format_target_url(ip, port)}/api/ps"
         headers = {'User-Agent': 'LLMScanner/4.2', 'Accept': 'application/json'}
         ssl_setting = not self.disable_ssl_verify
         timeout_val = aiohttp.ClientTimeout(total=self.timeout, connect=1.5)
@@ -424,7 +426,8 @@ class OllamaScanner:
                     url,
                     headers=headers,
                     ssl=ssl_setting,
-                    timeout=timeout_val
+                    timeout=timeout_val,
+                    allow_redirects=False
                 ) as response:
                     if response.status == 200:
                         try:
@@ -469,7 +472,7 @@ class OllamaScanner:
         model_name: str
     ) -> Tuple[Optional[Dict], ScanStatus]:
         """Get model configuration details from Ollama server (/api/show) with retry logic"""
-        url = f"http://{ip}:{port}/api/show"
+        url = f"{format_target_url(ip, port)}/api/show"
         headers = {
             'User-Agent': 'LLMScanner/4.2',
             'Content-Type': 'application/json',
@@ -486,7 +489,8 @@ class OllamaScanner:
                     headers=headers,
                     json=payload,
                     ssl=ssl_setting,
-                    timeout=timeout_val
+                    timeout=timeout_val,
+                    allow_redirects=False
                 ) as response:
                     if response.status == 200:
                         try:
