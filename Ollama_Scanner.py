@@ -15,7 +15,7 @@ import json
 import re
 import sys
 import os
-from typing import List, Tuple, Optional, Dict, Any, Iterator, AsyncIterator
+from typing import List, Tuple, Optional, Dict, Iterator, AsyncIterator
 from ipaddress import IPv4Network, IPv4Address, AddressValueError, IPv6Network, IPv6Address
 import aiohttp
 import time
@@ -114,19 +114,19 @@ def format_target_url(ip: str, port: int) -> str:
     return f"http://{ip}:{port}"
 
 
-def validate_ip_range_static(ip_range: str) -> List[Tuple[str, str]]:
+def validate_ip_range_static(ip_range: str) -> Iterator[Tuple[str, str]]:
     """
     Validate and expand a single IP range into individual IPs
-    
+
     Static method - does not require scanner instance.
-    Returns: List of tuples (ip_string, ip_version)
+    Returns: Iterator of tuples (ip_string, ip_version)
     """
     if not ip_range.strip():
         raise ValueError("Empty IP range provided")
 
     # Security: Truncate display string to prevent potential leak of full secrets if mis-parsed
     ip_display = safe_display(ip_range)
-        
+
     # Try CIDR notation first (both IPv4 and IPv6)
     try:
         network = IPv4Network(ip_range, strict=False)
@@ -137,31 +137,35 @@ def validate_ip_range_static(ip_range: str) -> List[Tuple[str, str]]:
         ])
         if not private_check:
             logger.warning(f"⚠️  Scanning PUBLIC IPv4 range: {ip_display}. Ensure you have permission!")
-        return [(str(ip), 'IPv4') for ip in network]
+        for ip in network:
+            yield (str(ip), 'IPv4')
+        return
     except ValueError:
         pass
-        
+
     try:
         network = IPv6Network(ip_range, strict=False)
         is_private = network.subnet_of(IPv6Network('fc00::/7'))
         if not is_private:
             logger.warning(f"⚠️  Scanning PUBLIC IPv6 range: {ip_display}. Ensure you have permission!")
-        return [(str(ip), 'IPv6') for ip in network]
+        for ip in network:
+            yield (str(ip), 'IPv6')
+        return
     except ValueError:
         pass
-    
+
     # Try IPv4 range notation like "192.168.1.1-10"
     if '-' in ip_range:
         parts = ip_range.split('-')
         if len(parts) != 2:
             raise ValueError(f"Invalid range format: {ip_display}")
         start_ip_str, end_part = parts[0].strip(), parts[1].strip()
-        
+
         try:
             start_ip = IPv4Address(start_ip_str)
         except AddressValueError:
             raise ValueError(f"Invalid start IP: {safe_display(start_ip_str)}")
-            
+
         if '.' in end_part:
             try:
                 end_ip = IPv4Address(end_part)
@@ -171,7 +175,9 @@ def validate_ip_range_static(ip_range: str) -> List[Tuple[str, str]]:
             end_int = int(end_ip)
             if start_int > end_int:
                 raise ValueError("Start IP cannot be greater than end IP")
-            return [(str(IPv4Address(i)), 'IPv4') for i in range(start_int, end_int + 1)]
+            for i in range(start_int, end_int + 1):
+                yield (str(IPv4Address(i)), 'IPv4')
+            return
         else:
             try:
                 end_suffix = int(end_part)
@@ -182,74 +188,132 @@ def validate_ip_range_static(ip_range: str) -> List[Tuple[str, str]]:
             base = '.'.join(base_parts[:-1])
             if end_suffix < start_num:
                 raise ValueError("End suffix cannot be less than start suffix")
-            ips = []
             for i in range(start_num, end_suffix + 1):
                 ip_candidate = f"{base}.{i}"
                 try:
                     IPv4Address(ip_candidate)
-                    ips.append((ip_candidate, 'IPv4'))
+                    yield (ip_candidate, 'IPv4')
                 except AddressValueError:
                     continue
-            return ips
-            
+            return
+
     # Single IP (try IPv4 first)
     try:
         IPv4Address(ip_range.strip())
-        return [(ip_range.strip(), 'IPv4')]
+        yield (ip_range.strip(), 'IPv4')
+        return
     except AddressValueError:
         pass
-        
+
     try:
         IPv6Address(ip_range.strip())
-        return [(ip_range.strip(), 'IPv6')]
+        yield (ip_range.strip(), 'IPv6')
+        return
     except AddressValueError:
         pass
-        
+
     raise ValueError(f"Invalid IP address or range: {ip_display}")
+
+
+def count_ips_in_range_static(ip_range: str) -> int:
+    """
+    Mathematically calculate the number of IPs in a range or CIDR without expansion.
+    O(1) complexity for most formats.
+    """
+    if not ip_range.strip():
+        return 0
+
+    # Try CIDR notation
+    try:
+        network = IPv4Network(ip_range.strip(), strict=False)
+        return network.num_addresses
+    except ValueError:
+        pass
+
+    try:
+        network = IPv6Network(ip_range.strip(), strict=False)
+        return network.num_addresses
+    except ValueError:
+        pass
+
+    # Try IPv4 range notation like "192.168.1.1-10"
+    if '-' in ip_range:
+        parts = ip_range.split('-')
+        if len(parts) == 2:
+            start_ip_str, end_part = parts[0].strip(), parts[1].strip()
+            try:
+                start_ip = IPv4Address(start_ip_str)
+                if '.' in end_part:
+                    end_ip = IPv4Address(end_part)
+                    diff = int(end_ip) - int(start_ip)
+                    return max(0, diff + 1) if diff >= 0 else 0
+                else:
+                    end_suffix = int(end_part)
+                    base_parts = start_ip_str.split('.')
+                    start_num = int(base_parts[-1])
+                    diff = end_suffix - start_num
+                    return max(0, diff + 1) if diff >= 0 else 0
+            except (AddressValueError, ValueError):
+                pass
+
+    # Single IP
+    try:
+        IPv4Address(ip_range.strip())
+        return 1
+    except AddressValueError:
+        pass
+
+    try:
+        IPv6Address(ip_range.strip())
+        return 1
+    except AddressValueError:
+        pass
+
+    return 0
 
 
 def parse_ip_from_input(input_source: str, is_file: bool = False) -> Iterator[Tuple[str, str]]:
     """
     Parse IP addresses/ranges from file or command-line input
-    
+
     Streamed approach - yields IPs one by one to reduce memory usage
-    
+
     Args:
         input_source: File path or single range string
         is_file: Whether input_source is a file path
-        
+
     Yields:
         Tuples of (ip_string, ip_version)
     """
     if is_file:
         if not os.path.exists(input_source):
             raise FileNotFoundError(f"Input file not found: {input_source}")
-        
+
         logger.info(f"Reading IP ranges from file: {input_source}")
         # True line-by-line streaming to prevent OOM on large target files
         with open(input_source, 'r', encoding='utf-8') as f:
             for line_num, line in enumerate(f, 1):
                 line = line.strip()
-                if line and not line.startswith('#'):
-                    # Security: Truncate logging to prevent sensitive data leakage
-                    line_display = safe_display(line)
-                    try:
-                        expanded = validate_ip_range_static(line)
-                        for ip in expanded:
-                            yield ip
-                        logger.debug(f"Line {line_num}: '{line_display}' -> {len(expanded)} IPs")
-                    except ValueError as e:
-                        logger.warning(f"Skipping invalid line {line_num} ('{line_display}'): {e}")
+                if not line or line.startswith('#'):
+                    continue
+                # Security: Truncate logging to prevent sensitive data leakage
+                line_display = safe_display(line)
+                try:
+                    count = 0
+                    for ip in validate_ip_range_static(line):
+                        yield ip
+                        count += 1
+                    logger.debug(f"Line {line_num}: '{line_display}' -> {count} IPs")
+                except ValueError as e:
+                    logger.warning(f"Skipping invalid line {line_num} ('{line_display}'): {e}")
     else:
         # Single range from command line
-        ips = validate_ip_range_static(input_source)
-        for ip in ips:
-            yield ip
+        yield from validate_ip_range_static(input_source)
 
 
 class OllamaScanner:
     """Professional-grade LLM server scanner with enterprise enhancements"""
-    
+
     def __init__(
         self,
         timeout: float = 5.0,
@@ -271,10 +335,10 @@ class OllamaScanner:
         # FIX 5: Explicitly initialize all stat keys for deterministic reporting
         self.stats: Dict[str, int] = defaultdict(int)
         self._init_stats()
-        
+
     def _init_stats(self):
         """Initialize all stat keys for deterministic reporting"""
-        for key in ['successful_queries', 'timeout', 'connection_error', 'scan_errors', 'undetected', 
+        for key in ['successful_queries', 'timeout', 'connection_error', 'scan_errors', 'undetected',
                     'process_status_success', 'model_info_success', 'port_closed']:
             self.stats[key] = 0
         for srv in ServerType:
@@ -284,7 +348,7 @@ class OllamaScanner:
     async def check_port(self, ip: str, port: int) -> Tuple[bool, ScanStatus]:
         """
         Check if a specific port is open on an IP address
-        
+
         Uses asyncio.wait_for with configurable timeout
         Restoration Note: OS-level TCP checks are significantly faster than aiohttp
         for filtering closed ports, preventing event-loop starvation during scans.
@@ -347,7 +411,7 @@ class OllamaScanner:
                     return None
                 await asyncio.sleep(self.retry_delay * (2 ** attempt))
         return None
-            
+
     async def detect_server_type(
         self,
         ip: str,
@@ -356,7 +420,7 @@ class OllamaScanner:
     ) -> Tuple[ServerType, List[str], ScanStatus]:
         """
         Detect which type of LLM server is running at the target
-        
+
         Supports:
         - Ollama (/api/tags)
         - LM Studio (/v1/models)
@@ -365,12 +429,12 @@ class OllamaScanner:
         headers = {'User-Agent': 'LLMScanner/4.2'}
         ssl_setting = not self.disable_ssl_verify
         # Faster connect timeout since port is already verified open by check_port
-        timeout_val = aiohttp.ClientTimeout(total=self.timeout, connect=1.5) 
-        
+        timeout_val = aiohttp.ClientTimeout(total=self.timeout, connect=1.5)
+
         # Try Ollama first
         url_tags = f"http://{ip}:{port}/api/tags"
         ollama_models = await self._single_probe_retry(
-            session, url_tags, 
+            session, url_tags,
             lambda d: [sanitize_text(m.get('name', 'unknown')) for m in d.get('models', [])],
             timeout_val, headers, ssl_setting
         )
@@ -378,7 +442,7 @@ class OllamaScanner:
             self.stats["successful_queries"] += 1
             self.stats[ServerType.OLLAMA.value + "_count"] += 1
             return (ServerType.OLLAMA, ollama_models, ScanStatus.SUCCESS)
-            
+
         # Try LM Studio
         url_models = f"http://{ip}:{port}/v1/models"
         lm_models = await self._single_probe_retry(
@@ -390,7 +454,7 @@ class OllamaScanner:
             self.stats["successful_queries"] += 1
             self.stats[ServerType.LM_STUDIO.value + "_count"] += 1
             return (ServerType.LM_STUDIO, lm_models, ScanStatus.SUCCESS)
-            
+
         # Try TextGen WebUI
         url_info = f"http://{ip}:{port}/api/info"
         tg_models = await self._single_probe_retry(
@@ -402,10 +466,10 @@ class OllamaScanner:
             self.stats["successful_queries"] += 1
             self.stats[ServerType.TEXTGEN_WEBUI.value + "_count"] += 1
             return (ServerType.TEXTGEN_WEBUI, tg_models, ScanStatus.SUCCESS)
-            
+
         self.stats["undetected"] += 1
         return (ServerType.UNKNOWN, [], ScanStatus.UNDETECTED)
-        
+
     async def get_process_status_ollama(
         self,
         ip: str,
@@ -417,7 +481,7 @@ class OllamaScanner:
         headers = {'User-Agent': 'LLMScanner/4.2', 'Accept': 'application/json'}
         ssl_setting = not self.disable_ssl_verify
         timeout_val = aiohttp.ClientTimeout(total=self.timeout, connect=1.5)
-        
+
         for attempt in range(self.retry_attempts):
             try:
                 async with session.get(
@@ -442,7 +506,7 @@ class OllamaScanner:
                         return ([], ScanStatus.SUCCESS)
                     else:
                         return ([], ScanStatus.INVALID_RESPONSE)
-                        
+
             except asyncio.TimeoutError:
                 if attempt < self.retry_attempts - 1:
                     wait_time = self.retry_delay * (2 ** attempt)
@@ -458,9 +522,9 @@ class OllamaScanner:
                     continue
                 self.stats["connection_error"] += 1
                 return ([], ScanStatus.CONNECTION_ERROR)
-        
+
         return ([], ScanStatus.CONNECTION_ERROR)
-            
+
     async def get_model_info_ollama(
         self,
         ip: str,
@@ -478,7 +542,7 @@ class OllamaScanner:
         payload = {"name": model_name}
         ssl_setting = not self.disable_ssl_verify
         timeout_val = aiohttp.ClientTimeout(total=self.timeout, connect=1.5)
-        
+
         for attempt in range(self.retry_attempts):
             try:
                 async with session.post(
@@ -504,7 +568,7 @@ class OllamaScanner:
                         return ({}, ScanStatus.SUCCESS)
                     else:
                         return (None, ScanStatus.INVALID_RESPONSE)
-                        
+
             except asyncio.TimeoutError:
                 if attempt < self.retry_attempts - 1:
                     wait_time = self.retry_delay * (2 ** attempt)
@@ -520,9 +584,9 @@ class OllamaScanner:
                     continue
                 self.stats["connection_error"] += 1
                 return (None, ScanStatus.CONNECTION_ERROR)
-        
+
         return (None, ScanStatus.CONNECTION_ERROR)
-        
+
     async def scan_single_ip(
         self,
         ip: str,
@@ -536,22 +600,22 @@ class OllamaScanner:
             is_open, port_status = await self.check_port(ip, port)
             if not is_open:
                 return None
-                
+
             url = format_target_url(ip, port)
-            
+
             server_type, models, model_status = await self.detect_server_type(ip, port, session)
-            
+
             if server_type == ServerType.UNKNOWN:
                 return None
-                
+
             is_accessible = True
-            
+
             process_list = []
             model_configs = []
-            
+
             if deep_scan and models and server_type == ServerType.OLLAMA:
                 process_list, ps_status = await self.get_process_status_ollama(ip, port, session)
-                
+
                 for model_name in models[:3]:
                     config, info_status = await self.get_model_info_ollama(ip, port, session, model_name)
                     if config:
@@ -559,7 +623,7 @@ class OllamaScanner:
                             "model_name": model_name,
                             "config": config
                         })
-            
+
             return ScanResult(
                 ip=ip,
                 port=port,
@@ -571,7 +635,7 @@ class OllamaScanner:
                 is_accessible=is_accessible,
                 status=model_status
             )
-            
+
         except asyncio.TimeoutError:
             self.stats["timeout"] += 1
             return None
@@ -579,7 +643,7 @@ class OllamaScanner:
             logger.debug(f"Unexpected error scanning {ip}:{port}: {e}")
             self.stats["scan_errors"] += 1
             return None
-            
+
     async def _batch_iterator(
         self,
         ip_iterator: Iterator[Tuple[str, str]],
@@ -596,10 +660,13 @@ class OllamaScanner:
                 batch = []
         if batch:
             yield batch
-            
+
     def _count_ips_without_exhausting(self, input_source: str, is_file: bool = False) -> int:
         """
         Count total IPs without consuming the iterator
+
+        For CIDR ranges, compute directly from network size
+        For files, parse each line and sum counts
         """
         total = 0
         if is_file:
@@ -607,16 +674,11 @@ class OllamaScanner:
                 for line in f:
                     line = line.strip()
                     if line and not line.startswith('#'):
-                        try:
-                            expanded = validate_ip_range_static(line)
-                            total += len(expanded)
-                        except ValueError:
-                            pass
+                        total += count_ips_in_range_static(line)
         else:
-            expanded = validate_ip_range_static(input_source)
-            total = len(expanded)
+            total = count_ips_in_range_static(input_source)
         return total
-        
+
     async def scan_range(
         self,
         input_source: str,
@@ -630,22 +692,23 @@ class OllamaScanner:
         Main scanning coroutine with improved resource management
         """
         total_ips = self._count_ips_without_exhausting(input_source, is_file)
-        
+
         print(f"🔍 Scanning {total_ips} IPs for port {port}..." + (" [DEEP SCAN]" if deep_scan else ""))
         print("-" * 70, file=sys.stderr)
-        
+
         if total_ips > 10000:
-            confirm = input(f"\n⚠️  Warning: Scanning {total_ips} IPs may take significant time.\nContinue? (y/N): ").lower()
+            confirm = input(
+                f"\n⚠️  Warning: Scanning {total_ips} IPs may take significant time.\nContinue? (y/N): ").lower()
             if confirm != 'y':
                 print("❌ Scan cancelled by user.", file=sys.stderr)
                 return []
-                
+
         results: List[ScanResult] = []
         results_lock = asyncio.Lock()
         start_time = time.time()
         completed = 0
         successes = 0
-        
+
         # FIX 1: Connector limits tuned to match concurrency, preventing pool exhaustion
         connector = aiohttp.TCPConnector(
             limit=self.max_concurrent + 50,
@@ -653,51 +716,54 @@ class OllamaScanner:
             ttl_dns_cache=300 if self.enable_dns_cache else None
         )
         timeout_obj = aiohttp.ClientTimeout(total=self.timeout, connect=self.timeout / 2)
-        
+
         progress_bar = None
         if HAS_TQDM and show_progress:
             # FIX TQDM: disable auto-refresh during heavy I/O to prevent event-loop blocking
             progress_bar = tqdm.tqdm(total=total_ips, desc="Scanning", unit="IP", file=sys.stdout, mininterval=0.5)
-            
+
         async with aiohttp.ClientSession(
             timeout=timeout_obj,
             connector=connector,
             headers={'Accept': 'application/json'}
         ) as session:
             ip_iterator = parse_ip_from_input(input_source, is_file=is_file)
-            
+
             async for batch in self._batch_iterator(ip_iterator, batch_size=batch_size):
                 tasks = [
                     asyncio.create_task(self.scan_single_ip(ip, version, port, session, deep_scan))
                     for ip, version in batch
                 ]
-                
+
                 # FIX STABILITY: Use as_completed but handle exceptions safely
                 for coro in asyncio.as_completed(tasks):
                     try:
                         result = await coro
                         completed += 1
-                        
+
                         if result:
                             successes += 1
                             if result.is_accessible and result.models:
                                 async with results_lock:
                                     results.append(result)
-                                
+
                                 # FIX TQDM: Use tqdm.tqdm.write() safely
                                 if HAS_TQDM and show_progress:
                                     tqdm.tqdm.write(f"\n✅ {result.server_type.value.upper()} Server: {result.url}")
-                                    tqdm.tqdm.write(f"   Models ({len(result.models)}): {', '.join(result.models[:5])}{'...' if len(result.models) > 5 else ''}")
-                                    
+                                    tqdm.tqdm.write(
+                                        f"   Models ({len(result.models)}): {', '.join(result.models[:5])}{'...' if len(result.models) > 5 else ''}")
+
                                     if deep_scan and result.process_list:
                                         tqdm.tqdm.write(f"   🔄 Loaded: {len(result.process_list)} model(s) in RAM/VRAM")
                                 else:
                                     print(f"\n✅ {result.server_type.value.upper()} Server: {result.url}", flush=True)
-                                    print(f"   Models ({len(result.models)}): {', '.join(result.models[:5])}{'...' if len(result.models) > 5 else ''}", flush=True)
-                                        
+                                    print(
+                                        f"   Models ({len(result.models)}): {', '.join(result.models[:5])}{'...' if len(result.models) > 5 else ''}", flush=True)
+
                                     if deep_scan and result.process_list:
-                                        print(f"   🔄 Loaded: {len(result.process_list)} model(s) in RAM/VRAM", flush=True)
-                                    
+                                        print(
+                                            f"   🔄 Loaded: {len(result.process_list)} model(s) in RAM/VRAM", flush=True)
+
                             elif result.is_accessible:
                                 async with results_lock:
                                     results.append(result)
@@ -710,35 +776,35 @@ class OllamaScanner:
                                     tqdm.tqdm.write(f"❌ Invalid server at {result.url}")
                                 else:
                                     print(f"❌ Invalid server at {result.url}", flush=True)
-                        
+
                         if progress_bar:
                             progress_bar.update(1)
                         elif show_progress and (completed % 50 == 0 or completed == total_ips):
                             elapsed = time.time() - start_time
                             rate = completed / elapsed if elapsed > 0 else 0
                             percent = (completed / total_ips) * 100 if total_ips > 0 else 0
-                            print(f"\r📈 Progress: {completed}/{total_ips} ({percent:.1f}%) | Rate: {rate:.1f} IPs/sec | Successes: {successes}", 
+                            print(f"\r📈 Progress: {completed}/{total_ips} ({percent:.1f}%) | Rate: {rate:.1f} IPs/sec | Successes: {successes}",
                                   end='', flush=True, file=sys.stderr)
-                                  
+
                     except asyncio.CancelledError:
                         # Cancel remaining tasks on interruption
                         for t in tasks:
                             t.cancel()
                         raise
-                    
+
                     except Exception as e:
                         logger.error(f"Error processing task in batch: {e}")
                         continue
-                
+
                 # FIX FREEZING: Yield control to event loop between batches to prevent starvation
                 await asyncio.sleep(0)
-        
+
         if progress_bar:
             progress_bar.close()
-        
+
         duration = time.time() - start_time
         print(f"\n\n🏁 Scan completed in {duration:.2f} seconds", file=sys.stderr)
-        
+
         print("\n📊 Scan Statistics:", file=sys.stderr)
         print(f"  • Total IPs scanned:     {total_ips}", file=sys.stderr)
         print(f"  • Successful queries:    {self.stats.get('successful_queries', 0)}", file=sys.stderr)
@@ -748,19 +814,19 @@ class OllamaScanner:
         if deep_scan:
             print(f"  • Process status checks: {self.stats.get('process_status_success', 0)}", file=sys.stderr)
             print(f"  • Model info retrieved:  {self.stats.get('model_info_success', 0)}", file=sys.stderr)
-        
+
         print(f"\n📋 Discovered Server Types:", file=sys.stderr)
         print(f"  • Ollama:         {self.stats.get('ollama_count', 0)}", file=sys.stderr)
         print(f"  • LM Studio:      {self.stats.get('lmstudio_count', 0)}", file=sys.stderr)
         print(f"  • TextGen WebUI:  {self.stats.get('textgen_webui_count', 0)}", file=sys.stderr)
-        
+
         if total_ips > 0:
             print(f"  • Overall success rate:  {(successes / total_ips * 100):.2f}%", file=sys.stderr)
         else:
             print(f"  • Overall success rate:  N/A (No IPs)", file=sys.stderr)
-            
+
         return results
-        
+
     def generate_report(
         self,
         results: List[ScanResult],
@@ -769,11 +835,11 @@ class OllamaScanner:
     ) -> str:
         """Generate scan report in specified format"""
         timestamp = time.strftime("%Y-%m-%d_%H%M%S", time.gmtime())
-        
+
         output_dir = os.path.dirname(output_path)
         if output_dir and not os.path.exists(output_dir):
             os.makedirs(output_dir, exist_ok=True)
-            
+
         if format_type == 'json':
             report_path = f"{output_path}_report_{timestamp}.json"
             report_data = {
@@ -800,7 +866,7 @@ class OllamaScanner:
             }
             with open(report_path, 'w', encoding='utf-8') as f:
                 json.dump(report_data, f, indent=2, ensure_ascii=False)
-                
+
         elif format_type == 'text':
             report_path = f"{output_path}_report_{timestamp}.txt"
             with open(report_path, 'w', encoding='utf-8') as f:
@@ -820,10 +886,10 @@ class OllamaScanner:
                         f.write(f"  Models: {', '.join(r.models)}\n")
                     if r.process_list:
                         f.write(f"  Loaded Processes: {len(r.process_list)}\n")
-                        
+
         else:
             raise ValueError(f"Unsupported format type: {format_type}")
-            
+
         return report_path
 
 
@@ -842,14 +908,15 @@ DISCLAIMER: Only scan networks you own or have explicit permission to test.
         """,
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    
+
     parser.add_argument("range", nargs="?", help="IP range to scan (CIDR notation, e.g., 192.168.1.0/24)")
     parser.add_argument("-f", "--file", help="File containing IP addresses/ranges (one per line)")
     parser.add_argument("-p", "--port", type=int, default=11434, help="Port to scan (default: 11434 Ollama)")
     parser.add_argument("-t", "--timeout", type=float, default=5.0, help="Connection timeout in seconds (default: 5)")
     parser.add_argument("-c", "--concurrent", type=int, default=100, help="Max concurrent connections (default: 100)")
     parser.add_argument("-r", "--retries", type=int, default=3, help="Retry attempts per target (default: 3)")
-    parser.add_argument("-d", "--retry-delay", type=float, default=0.5, help="Base delay between retries (default: 0.5)")
+    parser.add_argument("-d", "--retry-delay", type=float, default=0.5,
+                        help="Base delay between retries (default: 0.5)")
     parser.add_argument("-o", "--output", help="Base name for output files")
     parser.add_argument("--deep", action="store_true", help="Perform deep API scan (/api/ps, /api/show)")
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable debug logging")
@@ -857,18 +924,18 @@ DISCLAIMER: Only scan networks you own or have explicit permission to test.
     parser.add_argument("--no-progress", action="store_true", help="Suppress progress display")
     parser.add_argument("--no-ssl-verify", action="store_true", help="Disable SSL verification")
     parser.add_argument("--batch-size", type=int, default=500, help="Batch size for memory optimization (default: 500)")
-    
+
     args = parser.parse_args()
-    
+
     if not args.range and not args.file:
         parser.print_help()
         print("\n❌ Error: You must provide either an IP range or --file argument", file=sys.stderr)
         sys.exit(1)
-        
+
     if args.port < 1 or args.port > 65535:
         print("❌ Error: Port must be between 1 and 65535", file=sys.stderr)
         sys.exit(1)
-        
+
     if args.timeout <= 0:
         print("❌ Error: Timeout must be positive", file=sys.stderr)
         sys.exit(1)
@@ -881,11 +948,11 @@ DISCLAIMER: Only scan networks you own or have explicit permission to test.
     if args.retry_delay < 0:
         print("❌ Error: Retry delay cannot be negative", file=sys.stderr)
         sys.exit(1)
-        
+
     if args.verbose:
         logger.setLevel(logging.DEBUG)
         logger.debug("Verbose/debug mode enabled")
-    
+
     print("=" * 70, file=sys.stderr)
     print("🔍 LLM SERVER SCANNER v4.2 - ENTERPRISE GRADE", file=sys.stderr)
     print("=" * 70, file=sys.stderr)
@@ -893,7 +960,7 @@ DISCLAIMER: Only scan networks you own or have explicit permission to test.
     print("Ensure you have explicit permission to scan the target network.", file=sys.stderr)
     print("Unauthorized scanning may violate local laws and regulations.", file=sys.stderr)
     print("=" * 70, file=sys.stderr)
-    
+
     if args.file:
         print(f"📄 Input Source: {args.file}", file=sys.stderr)
     else:
@@ -903,7 +970,7 @@ DISCLAIMER: Only scan networks you own or have explicit permission to test.
     print(f"⏱️  Timeout: {args.timeout}s | Retries: {args.retries}", file=sys.stderr)
     print(f"Mode: {'DEEP SCAN' if args.deep else 'BASIC SCAN'}", file=sys.stderr)
     print("-" * 70, file=sys.stderr)
-    
+
     scanner = OllamaScanner(
         timeout=args.timeout,
         max_concurrent=args.concurrent,
@@ -913,16 +980,16 @@ DISCLAIMER: Only scan networks you own or have explicit permission to test.
         disable_ssl_verify=args.no_ssl_verify,
         port_timeout=args.timeout / 2
     )
-    
+
     try:
         input_source = args.file if args.file else args.range
         is_file = bool(args.file)
     except Exception as e:
         print(f"\n❌ Error parsing input: {e}", file=sys.stderr)
         sys.exit(1)
-        
+
     scan_start_time = time.time()
-    
+
     try:
         results = asyncio.run(scanner.scan_range(
             input_source,
@@ -932,7 +999,7 @@ DISCLAIMER: Only scan networks you own or have explicit permission to test.
             show_progress=not args.no_progress,
             batch_size=args.batch_size
         ))
-        
+
     except KeyboardInterrupt:
         print("\n\n⚠️  Scan interrupted by user (Ctrl+C)", file=sys.stderr)
         sys.exit(130)
@@ -945,14 +1012,14 @@ DISCLAIMER: Only scan networks you own or have explicit permission to test.
             import traceback
             traceback.print_exc()
         sys.exit(1)
-    
+
     duration = time.time() - scan_start_time
-    
+
     accessible_servers = []
     print(f"\n{'='*70}", file=sys.stderr)
     print(f"📊 RESULTS SUMMARY - {len(results)} servers discovered", file=sys.stderr)
     print("=" * 70, file=sys.stderr)
-    
+
     for idx, result in enumerate(results, 1):
         # FIX 6.3: Consistent flush=True throughout
         print(f"\n{idx}. {result.url}", flush=True)
@@ -962,7 +1029,7 @@ DISCLAIMER: Only scan networks you own or have explicit permission to test.
         print(f"   📝 List: {', '.join(result.models[:10])}", flush=True)
         if len(result.models) > 10:
             print(f"         ... and {len(result.models) - 10} more", flush=True)
-            
+
         if args.deep:
             if result.process_list:
                 print(f"\n   🔄 LOADED IN RAM/VRAM:", flush=True)
@@ -972,7 +1039,7 @@ DISCLAIMER: Only scan networks you own or have explicit permission to test.
                     print(f"      ├─ {name} (~{size_gb:.1f} GB)", flush=True)
                 if len(result.process_list) > 5:
                     print(f"      └─ ... and {len(result.process_list) - 5} more", flush=True)
-                    
+
             if result.model_configs:
                 print(f"\n   ⚙️  MODEL CONFIGURATIONS:", flush=True)
                 for mc in result.model_configs[:3]:
@@ -983,32 +1050,33 @@ DISCLAIMER: Only scan networks you own or have explicit permission to test.
                     print(f"      ├─ {name}", flush=True)
                     if system:
                         preview = system[:60].replace('\n', ' ')
-                        print(f"      │   System: {preview}..." if len(system) > 60 else f"      │   System: {preview}", flush=True)
+                        print(f"      │   System: {preview}..." if len(system) >
+                              60 else f"      │   System: {preview}", flush=True)
                     if params:
                         print(f"      │   Params: {params[:50] if len(params) > 50 else params}", flush=True)
                 if len(result.model_configs) > 3:
                     print(f"      └─ ... and {len(result.model_configs) - 3} more", flush=True)
-                    
+
         accessible_servers.append({
             'ip': result.ip,
             'models': result.models,
             'server_type': result.server_type,
             'status': result.status
         })
-    
+
     if args.output:
         try:
             report_path = scanner.generate_report(results, args.output, 'json')
             print(f"\n💾 JSON Report saved: {report_path}", file=sys.stderr)
         except Exception as e:
             print(f"❌ Error generating JSON report: {e}", file=sys.stderr)
-            
+
         text_path = f"{args.output}.txt"
         with open(text_path, 'w', encoding='utf-8') as f:
             for r in results:
                 f.write(f"{r.url}\n")
         print(f"💾 Server list exported to {text_path}", file=sys.stderr)
-    
+
     print("\n" + "=" * 70, file=sys.stderr)
     print("✅ SCAN COMPLETE", file=sys.stderr)
     print("=" * 70, file=sys.stderr)
