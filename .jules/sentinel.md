@@ -7,3 +7,8 @@
 **Vulnerability:** Malicious remote servers could return ANSI escape sequences or control characters (like `\r`) in model names or prompts, allowing terminal manipulation or deception (e.g., overwriting lines, hiding info).
 **Learning:** Sanitizing untrusted server data is critical for CLI tools. Stripping `\r` along with other non-printable characters (except `\n` and `\t`) prevents line-overwrite attacks.
 **Prevention:** Implement a `sanitize_text` function with a module-level compiled regex to strip ANSI escapes and non-printable characters from all data fetched from remote endpoints before display or storage.
+
+## 2026-04-05 - [Security Enhancement] Disabling HTTP Redirects (SSRF Protection)
+**Vulnerability:** A network scanner following HTTP redirects could be coerced into probing internal services or sensitive local endpoints (SSRF) if a target server responds with a 3xx redirect to a private IP or loopback address.
+**Learning:** For discovery tools, following redirects is rarely necessary and introduces significant security risk. Disabling them at the request level is a simple and effective defense-in-depth measure.
+**Prevention:** Always set `allow_redirects=False` in `aiohttp` (or equivalent) when performing automated scanning of remote targets to ensure the probe remains focused on the intended IP and port.
