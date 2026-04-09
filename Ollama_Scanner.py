@@ -114,12 +114,12 @@ def format_target_url(ip: str, port: int) -> str:
     return f"http://{ip}:{port}"
 
 
-def validate_ip_range_static(ip_range: str) -> List[Tuple[str, str]]:
+def validate_ip_range_static(ip_range: str) -> Iterator[Tuple[str, str]]:
     """
     Validate and expand a single IP range into individual IPs
     
     Static method - does not require scanner instance.
-    Returns: List of tuples (ip_string, ip_version)
+    Returns: Iterator of tuples (ip_string, ip_version)
     """
     if not ip_range.strip():
         raise ValueError("Empty IP range provided")
@@ -137,7 +137,9 @@ def validate_ip_range_static(ip_range: str) -> List[Tuple[str, str]]:
         ])
         if not private_check:
             logger.warning(f"⚠️  Scanning PUBLIC IPv4 range: {ip_display}. Ensure you have permission!")
-        return [(str(ip), 'IPv4') for ip in network]
+        for ip in network:
+            yield (str(ip), 'IPv4')
+        return
     except ValueError:
         pass
         
@@ -146,7 +148,9 @@ def validate_ip_range_static(ip_range: str) -> List[Tuple[str, str]]:
         is_private = network.subnet_of(IPv6Network('fc00::/7'))
         if not is_private:
             logger.warning(f"⚠️  Scanning PUBLIC IPv6 range: {ip_display}. Ensure you have permission!")
-        return [(str(ip), 'IPv6') for ip in network]
+        for ip in network:
+            yield (str(ip), 'IPv6')
+        return
     except ValueError:
         pass
     
@@ -171,7 +175,9 @@ def validate_ip_range_static(ip_range: str) -> List[Tuple[str, str]]:
             end_int = int(end_ip)
             if start_int > end_int:
                 raise ValueError("Start IP cannot be greater than end IP")
-            return [(str(IPv4Address(i)), 'IPv4') for i in range(start_int, end_int + 1)]
+            for i in range(start_int, end_int + 1):
+                yield (str(IPv4Address(i)), 'IPv4')
+            return
         else:
             try:
                 end_suffix = int(end_part)
@@ -182,30 +188,88 @@ def validate_ip_range_static(ip_range: str) -> List[Tuple[str, str]]:
             base = '.'.join(base_parts[:-1])
             if end_suffix < start_num:
                 raise ValueError("End suffix cannot be less than start suffix")
-            ips = []
             for i in range(start_num, end_suffix + 1):
                 ip_candidate = f"{base}.{i}"
                 try:
                     IPv4Address(ip_candidate)
-                    ips.append((ip_candidate, 'IPv4'))
+                    yield (ip_candidate, 'IPv4')
                 except AddressValueError:
                     continue
-            return ips
+            return
             
     # Single IP (try IPv4 first)
     try:
         IPv4Address(ip_range.strip())
-        return [(ip_range.strip(), 'IPv4')]
+        yield (ip_range.strip(), 'IPv4')
+        return
     except AddressValueError:
         pass
         
     try:
         IPv6Address(ip_range.strip())
-        return [(ip_range.strip(), 'IPv6')]
+        yield (ip_range.strip(), 'IPv6')
+        return
     except AddressValueError:
         pass
         
     raise ValueError(f"Invalid IP address or range: {ip_display}")
+
+
+def count_ips_in_range_static(ip_range: str) -> int:
+    """
+    Mathematically calculate the number of IPs in a range or CIDR without expansion.
+    O(1) complexity for most formats.
+    """
+    if not ip_range.strip():
+        return 0
+
+    # Try CIDR notation
+    try:
+        network = IPv4Network(ip_range.strip(), strict=False)
+        return network.num_addresses
+    except ValueError:
+        pass
+
+    try:
+        network = IPv6Network(ip_range.strip(), strict=False)
+        return network.num_addresses
+    except ValueError:
+        pass
+
+    # Try IPv4 range notation like "192.168.1.1-10"
+    if '-' in ip_range:
+        parts = ip_range.split('-')
+        if len(parts) == 2:
+            start_ip_str, end_part = parts[0].strip(), parts[1].strip()
+            try:
+                start_ip = IPv4Address(start_ip_str)
+                if '.' in end_part:
+                    end_ip = IPv4Address(end_part)
+                    diff = int(end_ip) - int(start_ip)
+                    return max(0, diff + 1) if diff >= 0 else 0
+                else:
+                    end_suffix = int(end_part)
+                    base_parts = start_ip_str.split('.')
+                    start_num = int(base_parts[-1])
+                    diff = end_suffix - start_num
+                    return max(0, diff + 1) if diff >= 0 else 0
+            except (AddressValueError, ValueError):
+                pass
+
+    # Single IP
+    try:
+        IPv4Address(ip_range.strip())
+        return 1
+    except AddressValueError:
+        pass
+
+    try:
+        IPv6Address(ip_range.strip())
+        return 1
+    except AddressValueError:
+        pass
+
+    return 0
 
 
 def parse_ip_from_input(input_source: str, is_file: bool = False) -> Iterator[Tuple[str, str]]:
@@ -234,17 +298,16 @@ def parse_ip_from_input(input_source: str, is_file: bool = False) -> Iterator[Tu
                     # Security: Truncate logging to prevent sensitive data leakage
                     line_display = safe_display(line)
                     try:
-                        expanded = validate_ip_range_static(line)
-                        for ip in expanded:
+                        count = 0
+                        for ip in validate_ip_range_static(line):
                             yield ip
-                        logger.debug(f"Line {line_num}: '{line_display}' -> {len(expanded)} IPs")
+                            count += 1
+                        logger.debug(f"Line {line_num}: '{line_display}' -> {count} IPs")
                     except ValueError as e:
                         logger.warning(f"Skipping invalid line {line_num} ('{line_display}'): {e}")
     else:
         # Single range from command line
-        ips = validate_ip_range_static(input_source)
-        for ip in ips:
-            yield ip
+        yield from validate_ip_range_static(input_source)
 
 
 class OllamaScanner:
@@ -607,14 +670,9 @@ class OllamaScanner:
                 for line in f:
                     line = line.strip()
                     if line and not line.startswith('#'):
-                        try:
-                            expanded = validate_ip_range_static(line)
-                            total += len(expanded)
-                        except ValueError:
-                            pass
+                        total += count_ips_in_range_static(line)
         else:
-            expanded = validate_ip_range_static(input_source)
-            total = len(expanded)
+            total = count_ips_in_range_static(input_source)
         return total
         
     async def scan_range(
