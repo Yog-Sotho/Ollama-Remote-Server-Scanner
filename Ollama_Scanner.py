@@ -130,12 +130,7 @@ def validate_ip_range_static(ip_range: str) -> List[Tuple[str, str]]:
     # Try CIDR notation first (both IPv4 and IPv6)
     try:
         network = IPv4Network(ip_range, strict=False)
-        private_check = any([
-            network.subnet_of(IPv4Network('10.0.0.0/8')),
-            network.subnet_of(IPv4Network('172.16.0.0/12')),
-            network.subnet_of(IPv4Network('192.168.0.0/16'))
-        ])
-        if not private_check:
+        if not network.is_private:
             logger.warning(f"⚠️  Scanning PUBLIC IPv4 range: {ip_display}. Ensure you have permission!")
         return [(str(ip), 'IPv4') for ip in network]
     except ValueError:
@@ -143,8 +138,7 @@ def validate_ip_range_static(ip_range: str) -> List[Tuple[str, str]]:
         
     try:
         network = IPv6Network(ip_range, strict=False)
-        is_private = network.subnet_of(IPv6Network('fc00::/7'))
-        if not is_private:
+        if not network.is_private:
             logger.warning(f"⚠️  Scanning PUBLIC IPv6 range: {ip_display}. Ensure you have permission!")
         return [(str(ip), 'IPv6') for ip in network]
     except ValueError:
@@ -324,7 +318,8 @@ class OllamaScanner:
                         url,
                         headers=headers,
                         ssl=ssl_setting,
-                        timeout=timeout_val
+                        timeout=timeout_val,
+                        allow_redirects=False
                     ) as response:
                         if response.status == 200:
                             try:
@@ -424,7 +419,8 @@ class OllamaScanner:
                     url,
                     headers=headers,
                     ssl=ssl_setting,
-                    timeout=timeout_val
+                    timeout=timeout_val,
+                    allow_redirects=False
                 ) as response:
                     if response.status == 200:
                         try:
@@ -486,7 +482,8 @@ class OllamaScanner:
                     headers=headers,
                     json=payload,
                     ssl=ssl_setting,
-                    timeout=timeout_val
+                    timeout=timeout_val,
+                    allow_redirects=False
                 ) as response:
                     if response.status == 200:
                         try:
