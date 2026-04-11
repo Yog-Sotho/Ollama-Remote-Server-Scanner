@@ -733,14 +733,14 @@ class OllamaScanner:
                 return []
                 
         results: List[ScanResult] = []
-        results_lock = asyncio.Lock()
         start_time = time.time()
         completed = 0
         successes = 0
         
+        # Optimization: Match pool size to concurrency to prevent bottlenecking
         connector = aiohttp.TCPConnector(
-            limit=256,
-            limit_per_host=10,
+            limit=self.max_concurrent + 50,
+            limit_per_host=20,
             ttl_dns_cache=300 if self.enable_dns_cache else None
         )
         timeout_obj = aiohttp.ClientTimeout(total=self.timeout, connect=self.timeout / 2)
@@ -758,42 +758,32 @@ class OllamaScanner:
             headers={'Accept': 'application/json'}
         ) as session:
             ip_iterator = parse_ip_from_input(input_source, is_file=is_file)
-            
-            # FIX 5.1-5.2: Process batches sequentially instead of collecting all
-            async for batch in self._batch_iterator(ip_iterator, batch_size=batch_size):
-                tasks = [
-                    self.scan_single_ip(ip, version, port, session, deep_scan)
-                    for ip, version in batch
-                ]
-                
-                # Process tasks for this batch
-                for coro in asyncio.as_completed(tasks):
+            active_tasks = set()
+
+            async def handle_completed(tasks):
+                nonlocal successes, completed
+                for task in tasks:
                     try:
-                        result = await coro
+                        result = await task
                         completed += 1
-                        
                         if result:
                             successes += 1
                             if result.is_accessible and result.models:
-                                async with results_lock:
-                                    results.append(result)
-                                
+                                results.append(result)
                                 if HAS_TQDM and show_progress:
                                     tqdm.write(f"\n✅ {result.server_type.value.upper()} Server: {result.url}")
-                                    tqdm.write(f"   Models ({len(result.models)}): {', '.join(result.models[:5])}{'...' if len(result.models) > 5 else ''}")
-                                    
+                                    tqdm.write(f"   Models ({len(result.models)}): {', '.join(result.models[:5])}"
+                                               f"{'...' if len(result.models) > 5 else ''}")
                                     if deep_scan and result.process_list:
                                         tqdm.write(f"   🔄 Loaded: {len(result.process_list)} model(s) in RAM/VRAM")
                                 else:
                                     print(f"\n✅ {result.server_type.value.upper()} Server: {result.url}", flush=True)
-                                    print(f"   Models ({len(result.models)}): {', '.join(result.models[:5])}{'...' if len(result.models) > 5 else ''}", flush=True)
-                                        
+                                    print(f"   Models ({len(result.models)}): {', '.join(result.models[:5])}"
+                                          f"{'...' if len(result.models) > 5 else ''}", flush=True)
                                     if deep_scan and result.process_list:
                                         print(f"   🔄 Loaded: {len(result.process_list)} model(s) in RAM/VRAM", flush=True)
-                                    
                             elif result.is_accessible:
-                                async with results_lock:
-                                    results.append(result)
+                                results.append(result)
                                 if HAS_TQDM and show_progress:
                                     tqdm.write(f"✓ Open port at {result.url} - No models returned")
                                 else:
@@ -803,23 +793,32 @@ class OllamaScanner:
                                     tqdm.write(f"❌ Invalid server at {result.url}")
                                 else:
                                     print(f"❌ Invalid server at {result.url}", flush=True)
-                        
+
                         if progress_bar:
                             progress_bar.update(1)
                         elif show_progress and (completed % 50 == 0 or completed == total_ips):
                             elapsed = time.time() - start_time
                             rate = completed / elapsed if elapsed > 0 else 0
                             percent = (completed / total_ips) * 100 if total_ips > 0 else 0
-                            print(f"\r📈 Progress: {completed}/{total_ips} ({percent:.1f}%) | Rate: {rate:.1f} IPs/sec | Successes: {successes}", 
+                            print(f"\r📈 Progress: {completed}/{total_ips} ({percent:.1f}%) | "
+                                  f"Rate: {rate:.1f} IPs/sec | Successes: {successes}",
                                   end='', flush=True, file=sys.stderr)
-                                  
                     except asyncio.CancelledError:
-                        break
-                    
+                        raise
                     except Exception as e:
-                        # FIX 6.4: Log exception specifically
-                        logger.error(f"Error processing task in batch: {e}")
-                        continue
+                        logger.error(f"Error processing task: {e}")
+
+            for ip, version in ip_iterator:
+                if len(active_tasks) >= self.max_concurrent:
+                    done, active_tasks = await asyncio.wait(active_tasks, return_when=asyncio.FIRST_COMPLETED)
+                    await handle_completed(done)
+
+                task = asyncio.create_task(self.scan_single_ip(ip, version, port, session, deep_scan))
+                active_tasks.add(task)
+
+            if active_tasks:
+                done, pending = await asyncio.wait(active_tasks)
+                await handle_completed(done)
         
         if progress_bar:
             progress_bar.close()
