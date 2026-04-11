@@ -129,12 +129,7 @@ def validate_ip_range_static(ip_range: str) -> Iterator[Tuple[str, str]]:
     # Try CIDR notation first (both IPv4 and IPv6)
     try:
         network = IPv4Network(ip_range, strict=False)
-        private_check = any([
-            network.subnet_of(IPv4Network('10.0.0.0/8')),
-            network.subnet_of(IPv4Network('172.16.0.0/12')),
-            network.subnet_of(IPv4Network('192.168.0.0/16'))
-        ])
-        if not private_check:
+        if not network.is_private:
             logger.warning(f"⚠️  Scanning PUBLIC IPv4 range: {ip_display}. Ensure you have permission!")
         for ip in network:
             yield (str(ip), 'IPv4')
@@ -144,8 +139,7 @@ def validate_ip_range_static(ip_range: str) -> Iterator[Tuple[str, str]]:
         
     try:
         network = IPv6Network(ip_range, strict=False)
-        is_private = network.subnet_of(IPv6Network('fc00::/7'))
-        if not is_private:
+        if not network.is_private:
             logger.warning(f"⚠️  Scanning PUBLIC IPv6 range: {ip_display}. Ensure you have permission!")
         for ip in network:
             yield (str(ip), 'IPv6')
@@ -397,7 +391,8 @@ class OllamaScanner:
                         url_tags,
                         headers=headers,
                         ssl=ssl_setting,
-                        timeout=aiohttp.ClientTimeout(total=self.timeout, connect=self.timeout / 2)
+                        timeout=aiohttp.ClientTimeout(total=self.timeout, connect=self.timeout / 2),
+                        allow_redirects=False
                     ) as response:
                         if response.status == 200:
                             try:
@@ -435,7 +430,8 @@ class OllamaScanner:
                         url_models,
                         headers=headers,
                         ssl=ssl_setting,
-                        timeout=aiohttp.ClientTimeout(total=self.timeout, connect=self.timeout / 2)
+                        timeout=aiohttp.ClientTimeout(total=self.timeout, connect=self.timeout / 2),
+                        allow_redirects=False
                     ) as response:
                         if response.status == 200:
                             try:
@@ -470,7 +466,8 @@ class OllamaScanner:
                         url_info,
                         headers=headers,
                         ssl=ssl_setting,
-                        timeout=aiohttp.ClientTimeout(total=self.timeout, connect=self.timeout / 2)
+                        timeout=aiohttp.ClientTimeout(total=self.timeout, connect=self.timeout / 2),
+                        allow_redirects=False
                     ) as response:
                         if response.status == 200:
                             try:
@@ -515,7 +512,8 @@ class OllamaScanner:
                     url,
                     headers=headers,
                     ssl=ssl_setting,
-                    timeout=aiohttp.ClientTimeout(total=self.timeout, connect=self.timeout / 2)
+                    timeout=aiohttp.ClientTimeout(total=self.timeout, connect=self.timeout / 2),
+                    allow_redirects=False
                 ) as response:
                     if response.status == 200:
                         try:
@@ -574,7 +572,8 @@ class OllamaScanner:
                     headers=headers,
                     json=payload,
                     ssl=ssl_setting,
-                    timeout=aiohttp.ClientTimeout(total=self.timeout, connect=self.timeout / 2)
+                    timeout=aiohttp.ClientTimeout(total=self.timeout, connect=self.timeout / 2),
+                    allow_redirects=False
                 ) as response:
                     if response.status == 200:
                         try:

@@ -7,3 +7,8 @@
 **Vulnerability:** Malicious remote servers could return ANSI escape sequences or control characters (like `\r`) in model names or prompts, allowing terminal manipulation or deception (e.g., overwriting lines, hiding info).
 **Learning:** Sanitizing untrusted server data is critical for CLI tools. Stripping `\r` along with other non-printable characters (except `\n` and `\t`) prevents line-overwrite attacks.
 **Prevention:** Implement a `sanitize_text` function with a module-level compiled regex to strip ANSI escapes and non-printable characters from all data fetched from remote endpoints before display or storage.
+
+## 2026-04-11 - [Security Enhancement] SSRF Protection & Comprehensive Private Network Detection
+**Vulnerability:** Potential SSRF via HTTP redirects and incomplete private network filtering allowing unintended scanning of local/reserved IP ranges.
+**Learning:** Manual subnet checks for private networks are often incomplete (missing loopback, link-local). aiohttp follows redirects by default, which is dangerous for scanners.
+**Prevention:** Use `ipaddress.network.is_private` for robust filtering and always set `allow_redirects=False` in scanning tools to prevent target-initiated SSRF.
