@@ -15,7 +15,7 @@ import json
 import re
 import sys
 import os
-from typing import List, Tuple, Optional, Dict, Any, Iterator, AsyncIterator
+from typing import List, Tuple, Optional, Dict, Iterator, AsyncIterator
 from ipaddress import IPv4Network, IPv4Address, AddressValueError, IPv6Network, IPv6Address
 import aiohttp
 import time
@@ -187,12 +187,7 @@ def validate_ip_range_static(ip_range: str) -> Iterator[Tuple[str, str]]:
     # Try CIDR notation first (both IPv4 and IPv6)
     try:
         network = IPv4Network(ip_range, strict=False)
-        private_check = any([
-            network.subnet_of(IPv4Network('10.0.0.0/8')),
-            network.subnet_of(IPv4Network('172.16.0.0/12')),
-            network.subnet_of(IPv4Network('192.168.0.0/16'))
-        ])
-        if not private_check:
+        if not network.is_private:
             logger.warning(f"⚠️  Scanning PUBLIC IPv4 range: {ip_display}. Ensure you have permission!")
         for ip in network:
             yield (str(ip), 'IPv4')
@@ -202,8 +197,7 @@ def validate_ip_range_static(ip_range: str) -> Iterator[Tuple[str, str]]:
 
     try:
         network = IPv6Network(ip_range, strict=False)
-        is_private = network.subnet_of(IPv6Network('fc00::/7'))
-        if not is_private:
+        if not network.is_private:
             logger.warning(f"⚠️  Scanning PUBLIC IPv6 range: {ip_display}. Ensure you have permission!")
         for ip in network:
             yield (str(ip), 'IPv6')
@@ -253,6 +247,7 @@ def validate_ip_range_static(ip_range: str) -> Iterator[Tuple[str, str]]:
                 except AddressValueError:
                     continue
             return
+            
 
     # Single IP (try IPv4 first)
     try:
@@ -270,6 +265,63 @@ def validate_ip_range_static(ip_range: str) -> Iterator[Tuple[str, str]]:
         pass
 
     raise ValueError(f"Invalid IP address or range: {ip_display}")
+
+
+def count_ips_in_range_static(ip_range: str) -> int:
+    """
+    Mathematically calculate the number of IPs in a range or CIDR without expansion.
+    O(1) complexity for most formats.
+    """
+    if not ip_range.strip():
+        return 0
+
+    # Try CIDR notation
+    try:
+        network = IPv4Network(ip_range.strip(), strict=False)
+        return network.num_addresses
+    except ValueError:
+        pass
+
+    try:
+        network = IPv6Network(ip_range.strip(), strict=False)
+        return network.num_addresses
+    except ValueError:
+        pass
+
+    # Try IPv4 range notation like "192.168.1.1-10"
+    if '-' in ip_range:
+        parts = ip_range.split('-')
+        if len(parts) == 2:
+            start_ip_str, end_part = parts[0].strip(), parts[1].strip()
+            try:
+                start_ip = IPv4Address(start_ip_str)
+                if '.' in end_part:
+                    end_ip = IPv4Address(end_part)
+                    diff = int(end_ip) - int(start_ip)
+                    return max(0, diff + 1) if diff >= 0 else 0
+                else:
+                    end_suffix = int(end_part)
+                    base_parts = start_ip_str.split('.')
+                    start_num = int(base_parts[-1])
+                    diff = end_suffix - start_num
+                    return max(0, diff + 1) if diff >= 0 else 0
+            except (AddressValueError, ValueError):
+                pass
+
+    # Single IP
+    try:
+        IPv4Address(ip_range.strip())
+        return 1
+    except AddressValueError:
+        pass
+
+    try:
+        IPv6Address(ip_range.strip())
+        return 1
+    except AddressValueError:
+        pass
+
+    return 0
 
 
 def parse_ip_from_input(input_source: str, is_file: bool = False) -> Iterator[Tuple[str, str]]:
@@ -305,6 +357,18 @@ def parse_ip_from_input(input_source: str, is_file: bool = False) -> Iterator[Tu
                         logger.debug(f"Line {line_num}: '{line_display}' -> {count} IPs")
                     except ValueError as e:
                         logger.warning(f"Skipping invalid line {line_num} ('{line_display}'): {e}")
+                if not line or line.startswith('#'):
+                    continue
+                # Security: Truncate logging to prevent sensitive data leakage
+                line_display = safe_display(line)
+                try:
+                    count = 0
+                    for ip in validate_ip_range_static(line):
+                        yield ip
+                        count += 1
+                    logger.debug(f"Line {line_num}: '{line_display}' -> {count} IPs")
+                except ValueError as e:
+                    logger.warning(f"Skipping invalid line {line_num} ('{line_display}'): {e}")
     else:
         # Single range from command line
         yield from validate_ip_range_static(input_source)
@@ -387,6 +451,7 @@ class OllamaScanner:
                         url,
                         headers=headers,
                         ssl=ssl_setting,
+                        allow_redirects=False,
                         timeout=timeout_val
                     ) as response:
                         if response.status == 200:
@@ -431,7 +496,7 @@ class OllamaScanner:
         timeout_val = aiohttp.ClientTimeout(total=self.timeout, connect=1.5)
 
         # Try Ollama first
-        url_tags = f"http://{ip}:{port}/api/tags"
+        url_tags = f"{format_target_url(ip, port)}/api/tags"
         ollama_models = await self._single_probe_retry(
             session, url_tags,
             lambda d: [sanitize_text(m.get('name', 'unknown')) for m in d.get('models', [])],
@@ -443,7 +508,7 @@ class OllamaScanner:
             return (ServerType.OLLAMA, ollama_models, ScanStatus.SUCCESS)
 
         # Try LM Studio
-        url_models = f"http://{ip}:{port}/v1/models"
+        url_models = f"{format_target_url(ip, port)}/v1/models"
         lm_models = await self._single_probe_retry(
             session, url_models,
             lambda d: [sanitize_text(m.get('id', m.get('name', 'unknown'))) for m in d.get('data', [])],
@@ -455,7 +520,7 @@ class OllamaScanner:
             return (ServerType.LM_STUDIO, lm_models, ScanStatus.SUCCESS)
 
         # Try TextGen WebUI
-        url_info = f"http://{ip}:{port}/api/info"
+        url_info = f"{format_target_url(ip, port)}/api/info"
         tg_models = await self._single_probe_retry(
             session, url_info,
             lambda d: [sanitize_text(d.get('loading_model', d.get('model_name', 'unknown')))],
@@ -476,7 +541,7 @@ class OllamaScanner:
         session: aiohttp.ClientSession
     ) -> Tuple[List[Dict], ScanStatus]:
         """Get currently loaded models from Ollama server (/api/ps) with retry logic"""
-        url = f"http://{ip}:{port}/api/ps"
+        url = f"{format_target_url(ip, port)}/api/ps"
         headers = {'User-Agent': 'LLMScanner/4.2', 'Accept': 'application/json'}
         ssl_setting = not self.disable_ssl_verify
         timeout_val = aiohttp.ClientTimeout(total=self.timeout, connect=1.5)
@@ -487,6 +552,7 @@ class OllamaScanner:
                     url,
                     headers=headers,
                     ssl=ssl_setting,
+                    allow_redirects=False,
                     timeout=timeout_val
                 ) as response:
                     if response.status == 200:
@@ -532,7 +598,7 @@ class OllamaScanner:
         model_name: str
     ) -> Tuple[Optional[Dict], ScanStatus]:
         """Get model configuration details from Ollama server (/api/show) with retry logic"""
-        url = f"http://{ip}:{port}/api/show"
+        url = f"{format_target_url(ip, port)}/api/show"
         headers = {
             'User-Agent': 'LLMScanner/4.2',
             'Content-Type': 'application/json',
@@ -549,7 +615,8 @@ class OllamaScanner:
                     headers=headers,
                     json=payload,
                     ssl=ssl_setting,
-                    timeout=timeout_val
+                    timeout=timeout_val,
+                    allow_redirects=False
                 ) as response:
                     if response.status == 200:
                         try:
@@ -663,6 +730,9 @@ class OllamaScanner:
     def _count_ips_without_exhausting(self, input_source: str, is_file: bool = False) -> int:
         """
         Count total IPs without consuming the iterator
+
+        For CIDR ranges, compute directly from network size
+        For files, parse each line and sum counts
         """
         total = 0
         if is_file:
@@ -693,7 +763,8 @@ class OllamaScanner:
         print("-" * 70, file=sys.stderr)
 
         if total_ips > 10000:
-            confirm = input(f"\n⚠️  Warning: Scanning {total_ips} IPs may take significant time.\nContinue? (y/N): ").lower()
+            confirm = input(
+                f"\n⚠️  Warning: Scanning {total_ips} IPs may take significant time.\nContinue? (y/N): ").lower()
             if confirm != 'y':
                 print("❌ Scan cancelled by user.", file=sys.stderr)
                 return []
@@ -733,7 +804,7 @@ class OllamaScanner:
                 # FIX STABILITY: Use as_completed but handle exceptions safely
                 for coro in asyncio.as_completed(tasks):
                     try:
-                        result = await coro
+                        result = await task
                         completed += 1
 
                         if result:
@@ -780,12 +851,12 @@ class OllamaScanner:
 
                     except asyncio.CancelledError:
                         # Cancel remaining tasks on interruption
-                        for t in tasks:
-                            t.cancel()
+                        for p_task in pending:
+                            p_task.cancel()
                         raise
 
                     except Exception as e:
-                        logger.error(f"Error processing task in batch: {e}")
+                        logger.error(f"Error processing task: {e}")
                         continue
 
                 # FIX FREEZING: Yield control to event loop between batches to prevent starvation
@@ -907,7 +978,8 @@ DISCLAIMER: Only scan networks you own or have explicit permission to test.
     parser.add_argument("-t", "--timeout", type=float, default=5.0, help="Connection timeout in seconds (default: 5)")
     parser.add_argument("-c", "--concurrent", type=int, default=100, help="Max concurrent connections (default: 100)")
     parser.add_argument("-r", "--retries", type=int, default=3, help="Retry attempts per target (default: 3)")
-    parser.add_argument("-d", "--retry-delay", type=float, default=0.5, help="Base delay between retries (default: 0.5)")
+    parser.add_argument("-d", "--retry-delay", type=float, default=0.5,
+                        help="Base delay between retries (default: 0.5)")
     parser.add_argument("-o", "--output", help="Base name for output files")
     parser.add_argument("--deep", action="store_true", help="Perform deep API scan (/api/ps, /api/show)")
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable debug logging")
@@ -1041,7 +1113,8 @@ DISCLAIMER: Only scan networks you own or have explicit permission to test.
                     print(f"      ├─ {name}", flush=True)
                     if system:
                         preview = system[:60].replace('\n', ' ')
-                        print(f"      │   System: {preview}..." if len(system) > 60 else f"      │   System: {preview}", flush=True)
+                        print(f"      │   System: {preview}..." if len(system) >
+                              60 else f"      │   System: {preview}", flush=True)
                     if params:
                         print(f"      │   Params: {params[:50] if len(params) > 50 else params}", flush=True)
                 if len(result.model_configs) > 3:
