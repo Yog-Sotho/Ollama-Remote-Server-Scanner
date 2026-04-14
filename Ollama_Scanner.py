@@ -196,7 +196,6 @@ def validate_ip_range_static(ip_range: str) -> Iterator[Tuple[str, str]]:
                 except AddressValueError:
                     continue
             return
-            
 
     # Single IP (try IPv4 first)
     try:
@@ -295,17 +294,6 @@ def parse_ip_from_input(input_source: str, is_file: bool = False) -> Iterator[Tu
         with open(input_source, 'r', encoding='utf-8') as f:
             for line_num, line in enumerate(f, 1):
                 line = line.strip()
-                if line and not line.startswith('#'):
-                    # Security: Truncate logging to prevent sensitive data leakage
-                    line_display = safe_display(line)
-                    try:
-                        count = 0
-                        for ip in validate_ip_range_static(line):
-                            yield ip
-                            count += 1
-                        logger.debug(f"Line {line_num}: '{line_display}' -> {count} IPs")
-                    except ValueError as e:
-                        logger.warning(f"Skipping invalid line {line_num} ('{line_display}'): {e}")
                 if not line or line.startswith('#'):
                     continue
                 # Security: Truncate logging to prevent sensitive data leakage
@@ -400,8 +388,7 @@ class OllamaScanner:
                         url,
                         headers=headers,
                         ssl=ssl_setting,
-                        timeout=timeout_val,
-                        allow_redirects=False
+                        timeout=timeout_val
                     ) as response:
                         if response.status == 200:
                             try:
@@ -501,8 +488,7 @@ class OllamaScanner:
                     url,
                     headers=headers,
                     ssl=ssl_setting,
-                    timeout=timeout_val,
-                    allow_redirects=False
+                    timeout=timeout_val
                 ) as response:
                     if response.status == 200:
                         try:
@@ -564,8 +550,7 @@ class OllamaScanner:
                     headers=headers,
                     json=payload,
                     ssl=ssl_setting,
-                    timeout=timeout_val,
-                    allow_redirects=False
+                    timeout=timeout_val
                 ) as response:
                     if response.status == 200:
                         try:
@@ -743,13 +728,15 @@ class OllamaScanner:
             headers={'Accept': 'application/json'}
         ) as session:
             ip_iterator = parse_ip_from_input(input_source, is_file=is_file)
-            
-            # Sliding window concurrency model: maintains continuous task flow without batching
+
+            # BOLT OPTIMIZATION: Sliding window concurrency (continuous task flow)
+            # This prevents the "long-tail" effect where one slow task stalls an entire batch.
             pending = set()
 
             while True:
-                # Refill task pool up to max_concurrent
-                while len(pending) < self.max_concurrent:
+                # Refill the pending set up to max_concurrent (or batch_size as fallback)
+                concurrency_limit = self.max_concurrent if hasattr(self, 'max_concurrent') else batch_size
+                while len(pending) < concurrency_limit:
                     try:
                         ip_info = next(ip_iterator)
                         ip, version = ip_info
@@ -761,9 +748,9 @@ class OllamaScanner:
                 if not pending:
                     break
 
-                # Wait for any task to complete
+                # Wait for at least one task to complete
                 done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
-                
+
                 for task in done:
                     try:
                         result = await task
@@ -815,17 +802,14 @@ class OllamaScanner:
                                   end='', flush=True, file=sys.stderr)
 
                     except asyncio.CancelledError:
-                        # Cancel remaining tasks on interruption
-                        for p_task in pending:
-                            p_task.cancel()
+                        # On cancellation, ensure we cancel all pending tasks
+                        for t in pending:
+                            t.cancel()
                         raise
 
                     except Exception as e:
-                        logger.error(f"Error processing task: {e}")
+                        logger.error(f"Error processing scan task: {e}")
                         continue
-
-                # FIX FREEZING: Yield control to event loop between batches to prevent starvation
-                await asyncio.sleep(0)
 
         if progress_bar:
             progress_bar.close()

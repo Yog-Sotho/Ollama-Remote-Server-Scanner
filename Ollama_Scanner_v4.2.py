@@ -719,8 +719,8 @@ class OllamaScanner:
         successes = 0
         
         connector = aiohttp.TCPConnector(
-            limit=self.max_concurrent + 50,
-            limit_per_host=20,
+            limit=256,
+            limit_per_host=10,
             ttl_dns_cache=300 if self.enable_dns_cache else None
         )
         timeout_obj = aiohttp.ClientTimeout(total=self.timeout, connect=self.timeout / 2)
@@ -740,12 +740,6 @@ class OllamaScanner:
             ip_iterator = parse_ip_from_input(input_source, is_file=is_file)
             pending = set()
             
-            # Sliding window concurrency model: maintains continuous task flow without batching
-            pending = set()
-
-            while True:
-                # Refill task pool up to max_concurrent
-                while len(pending) < self.max_concurrent:
             # BOLT OPTIMIZATION: Sliding window concurrency (continuous task flow)
             # This prevents the "long-tail" effect where one slow task stalls an entire batch.
             while True:
@@ -758,13 +752,6 @@ class OllamaScanner:
                         pending.add(task)
                     except StopIteration:
                         break
-                
-                if not pending:
-                    break
-
-                # Wait for any task to complete
-                done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
-
 
                 if not pending:
                     break
@@ -824,12 +811,13 @@ class OllamaScanner:
                         
                                   
                     except asyncio.CancelledError:
-                        for p_task in pending:
-                            p_task.cancel()
+                        # On cancellation, ensure we cancel all pending tasks
+                        for t in pending:
+                            t.cancel()
                         raise
                     
                     except Exception as e:
-                        logger.error(f"Error processing task: {e}")
+                        logger.error(f"Error processing scan task: {e}")
                         continue
         
         if progress_bar:
