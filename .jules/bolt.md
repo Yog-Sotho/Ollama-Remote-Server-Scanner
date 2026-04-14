@@ -5,3 +5,6 @@
 ## 2026-04-06 - [Sliding Window Concurrency & O(1) Range Counting]
 **Learning:** Discrete batching (processing N tasks, waiting for all to finish, then starting next N) causes head-of-line blocking where one slow timeout stalls the entire pipeline. Additionally, expanding full lists for IP counting causes OOM and O(N) delays.
 **Action:** Use a sliding window concurrency model with `asyncio.wait(..., return_when=FIRST_COMPLETED)` to keep the task pool constantly saturated. Use mathematical O(1) calculations for counting range sizes instead of expanding them.
+## 2026-04-05 - [Sliding Window Concurrency for Scanners]
+**Learning:** Discrete batch-by-batch processing (using `asyncio.as_completed` on fixed chunks) causes "head-of-line blocking" where one slow task stalls the entire batch, leaving concurrent slots idle.
+**Action:** Use a sliding window pattern with a `pending` set and `asyncio.wait(..., return_when=asyncio.FIRST_COMPLETED)` to refill the task queue as soon as any single task finishes, maintaining maximum throughput.
