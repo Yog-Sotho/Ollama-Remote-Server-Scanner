@@ -15,7 +15,7 @@ import json
 import re
 import sys
 import os
-from typing import List, Tuple, Optional, Dict, Any, Iterator, AsyncIterator
+from typing import List, Tuple, Optional, Dict, Iterator
 from ipaddress import IPv4Network, IPv4Address, AddressValueError, IPv6Network, IPv6Address
 import aiohttp
 import time
@@ -129,12 +129,7 @@ def validate_ip_range_static(ip_range: str) -> Iterator[Tuple[str, str]]:
     # Try CIDR notation first (both IPv4 and IPv6)
     try:
         network = IPv4Network(ip_range, strict=False)
-        private_check = any([
-            network.subnet_of(IPv4Network('10.0.0.0/8')),
-            network.subnet_of(IPv4Network('172.16.0.0/12')),
-            network.subnet_of(IPv4Network('192.168.0.0/16'))
-        ])
-        if not private_check:
+        if not network.is_private:
             logger.warning(f"⚠️  Scanning PUBLIC IPv4 range: {ip_display}. Ensure you have permission!")
         for ip in network:
             yield (str(ip), 'IPv4')
@@ -144,8 +139,7 @@ def validate_ip_range_static(ip_range: str) -> Iterator[Tuple[str, str]]:
         
     try:
         network = IPv6Network(ip_range, strict=False)
-        is_private = network.subnet_of(IPv6Network('fc00::/7'))
-        if not is_private:
+        if not network.is_private:
             logger.warning(f"⚠️  Scanning PUBLIC IPv6 range: {ip_display}. Ensure you have permission!")
         for ip in network:
             yield (str(ip), 'IPv6')
@@ -379,9 +373,9 @@ class OllamaScanner:
         Semaphore acquired per-request, not held across all probes
         Per-endpoint retry logic
         """
-        url_tags = f"http://{ip}:{port}/api/tags"
-        url_models = f"http://{ip}:{port}/v1/models"
-        url_info = f"http://{ip}:{port}/api/info"
+        url_tags = f"{format_target_url(ip, port)}/api/tags"
+        url_models = f"{format_target_url(ip, port)}/v1/models"
+        url_info = f"{format_target_url(ip, port)}/api/info"
         headers = {'User-Agent': 'LLMScanner/4.2'}
         ssl_setting = not self.disable_ssl_verify
         
@@ -397,6 +391,9 @@ class OllamaScanner:
                         url_tags,
                         headers=headers,
                         ssl=ssl_setting,
+                        timeout=aiohttp.ClientTimeout(total=self.timeout, connect=self.timeout / 2),
+                        allow_redirects=False
+                        allow_redirects=False,
                         timeout=aiohttp.ClientTimeout(total=self.timeout, connect=self.timeout / 2)
                     ) as response:
                         if response.status == 200:
@@ -435,7 +432,8 @@ class OllamaScanner:
                         url_models,
                         headers=headers,
                         ssl=ssl_setting,
-                        timeout=aiohttp.ClientTimeout(total=self.timeout, connect=self.timeout / 2)
+                        timeout=aiohttp.ClientTimeout(total=self.timeout, connect=self.timeout / 2),
+                        allow_redirects=False
                     ) as response:
                         if response.status == 200:
                             try:
@@ -470,7 +468,8 @@ class OllamaScanner:
                         url_info,
                         headers=headers,
                         ssl=ssl_setting,
-                        timeout=aiohttp.ClientTimeout(total=self.timeout, connect=self.timeout / 2)
+                        timeout=aiohttp.ClientTimeout(total=self.timeout, connect=self.timeout / 2),
+                        allow_redirects=False
                     ) as response:
                         if response.status == 200:
                             try:
@@ -515,7 +514,8 @@ class OllamaScanner:
                     url,
                     headers=headers,
                     ssl=ssl_setting,
-                    timeout=aiohttp.ClientTimeout(total=self.timeout, connect=self.timeout / 2)
+                    timeout=aiohttp.ClientTimeout(total=self.timeout, connect=self.timeout / 2),
+                    allow_redirects=False
                 ) as response:
                     if response.status == 200:
                         try:
@@ -574,7 +574,8 @@ class OllamaScanner:
                     headers=headers,
                     json=payload,
                     ssl=ssl_setting,
-                    timeout=aiohttp.ClientTimeout(total=self.timeout, connect=self.timeout / 2)
+                    timeout=aiohttp.ClientTimeout(total=self.timeout, connect=self.timeout / 2),
+                    allow_redirects=False
                 ) as response:
                     if response.status == 200:
                         try:
@@ -657,25 +658,6 @@ class OllamaScanner:
             logger.debug(f"Unexpected error scanning {ip}:{port}: {e}")
             self.stats["scan_errors"] += 1
             return None
-            
-    async def _batch_iterator(
-        self,
-        ip_iterator: Iterator[Tuple[str, str]],
-        batch_size: int = 1000
-    ) -> AsyncIterator[List[Tuple[str, str]]]:
-        """
-        Yield batches of IPs from the iterator
-        
-        FIX 4.1: Corrected return type annotation to AsyncIterator
-        """
-        batch: List[Tuple[str, str]] = []
-        for ip_item in ip_iterator:
-            batch.append(ip_item)
-            if len(batch) >= batch_size:
-                yield batch
-                batch = []
-        if batch:
-            yield batch
             
     def _count_ips_without_exhausting(self, input_source: str, is_file: bool = False) -> int:
         """
@@ -774,12 +756,18 @@ class OllamaScanner:
                                     tqdm.write(f"\n✅ {result.server_type.value.upper()} Server: {result.url}")
                                     tqdm.write(f"   Models ({len(result.models)}): {', '.join(result.models[:5])}"
                                                f"{'...' if len(result.models) > 5 else ''}")
+                                    models_str = ', '.join(result.models[:5])
+                                    suffix = '...' if len(result.models) > 5 else ''
+                                    tqdm.write(f"   Models ({len(result.models)}): {models_str}{suffix}")
+                                    
                                     if deep_scan and result.process_list:
                                         tqdm.write(f"   🔄 Loaded: {len(result.process_list)} model(s) in RAM/VRAM")
                                 else:
                                     print(f"\n✅ {result.server_type.value.upper()} Server: {result.url}", flush=True)
-                                    print(f"   Models ({len(result.models)}): {', '.join(result.models[:5])}"
-                                          f"{'...' if len(result.models) > 5 else ''}", flush=True)
+                                    models_str = ', '.join(result.models[:5])
+                                    suffix = '...' if len(result.models) > 5 else ''
+                                    print(f"   Models ({len(result.models)}): {models_str}{suffix}", flush=True)
+                                        
                                     if deep_scan and result.process_list:
                                         print(f"   🔄 Loaded: {len(result.process_list)} model(s) in RAM/VRAM", flush=True)
                             elif result.is_accessible:
