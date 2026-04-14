@@ -709,17 +709,21 @@ class OllamaScanner:
         print("-" * 70, file=sys.stderr)
         
         if total_ips > 10000:
-            confirm = input(f"\n⚠️  Warning: Scanning {total_ips} IPs may take significant time.\nContinue? (y/N): ").lower()
-            if confirm != 'y':
-                print("❌ Scan cancelled by user.", file=sys.stderr)
-                return []
+            # Check if running in a TTY before asking for input
+            if sys.stdin.isatty():
+                confirm = input(f"\n⚠️  Warning: Scanning {total_ips} IPs may take significant time.\nContinue? (y/N): ").lower()
+                if confirm != 'y':
+                    print("❌ Scan cancelled by user.", file=sys.stderr)
+                    return []
+            else:
+                logger.warning(f"Scanning {total_ips} IPs. Large scans may be slow.")
                 
         results: List[ScanResult] = []
         start_time = time.time()
         completed = 0
         successes = 0
         
-        # Optimization: Match pool size to concurrency to prevent bottlenecking
+        # Standardized connector limits: max_concurrent + 50 total, 20 per host
         connector = aiohttp.TCPConnector(
             limit=self.max_concurrent + 50,
             limit_per_host=20,
@@ -739,38 +743,38 @@ class OllamaScanner:
             connector=connector,
             headers={'Accept': 'application/json'}
         ) as session:
-            ip_iterator = parse_ip_from_input(input_source, is_file=is_file)
-            active_tasks = set()
-
-            async def handle_completed(tasks):
-                nonlocal successes, completed
-                for task in tasks:
+            ip_queue = asyncio.Queue(maxsize=self.max_concurrent * 2)
+            
+            async def worker():
+                nonlocal completed, successes
+                while True:
                     try:
-                        result = await task
+                        item = await ip_queue.get()
+                        if item is None:
+                            ip_queue.task_done()
+                            break
+
+                        ip, version = item
+                        result = await self.scan_single_ip(ip, version, port, session, deep_scan)
                         completed += 1
                         if result:
                             successes += 1
+
                             if result.is_accessible and result.models:
+                                # list.append is atomic in asyncio single-threaded event loop
                                 results.append(result)
                                 if HAS_TQDM and show_progress:
                                     tqdm.write(f"\n✅ {result.server_type.value.upper()} Server: {result.url}")
-                                    tqdm.write(f"   Models ({len(result.models)}): {', '.join(result.models[:5])}"
-                                               f"{'...' if len(result.models) > 5 else ''}")
-                                    models_str = ', '.join(result.models[:5])
-                                    suffix = '...' if len(result.models) > 5 else ''
-                                    tqdm.write(f"   Models ({len(result.models)}): {models_str}{suffix}")
-                                    
+                                    tqdm.write(f"   Models ({len(result.models)}): {', '.join(result.models[:5])}{'...' if len(result.models) > 5 else ''}")
                                     if deep_scan and result.process_list:
                                         tqdm.write(f"   🔄 Loaded: {len(result.process_list)} model(s) in RAM/VRAM")
                                 else:
                                     print(f"\n✅ {result.server_type.value.upper()} Server: {result.url}", flush=True)
-                                    models_str = ', '.join(result.models[:5])
-                                    suffix = '...' if len(result.models) > 5 else ''
-                                    print(f"   Models ({len(result.models)}): {models_str}{suffix}", flush=True)
-                                        
+                                    print(f"   Models ({len(result.models)}): {', '.join(result.models[:5])}{'...' if len(result.models) > 5 else ''}", flush=True)
                                     if deep_scan and result.process_list:
                                         print(f"   🔄 Loaded: {len(result.process_list)} model(s) in RAM/VRAM", flush=True)
                             elif result.is_accessible:
+                                # list.append is atomic in asyncio single-threaded event loop
                                 results.append(result)
                                 if HAS_TQDM and show_progress:
                                     tqdm.write(f"✓ Open port at {result.url} - No models returned")
@@ -791,22 +795,26 @@ class OllamaScanner:
                             print(f"\r📈 Progress: {completed}/{total_ips} ({percent:.1f}%) | "
                                   f"Rate: {rate:.1f} IPs/sec | Successes: {successes}",
                                   end='', flush=True, file=sys.stderr)
-                    except asyncio.CancelledError:
-                        raise
+
+                        ip_queue.task_done()
                     except Exception as e:
-                        logger.error(f"Error processing task: {e}")
+                        logger.error(f"Worker error: {e}")
+                        ip_queue.task_done()
 
-            for ip, version in ip_iterator:
-                if len(active_tasks) >= self.max_concurrent:
-                    done, active_tasks = await asyncio.wait(active_tasks, return_when=asyncio.FIRST_COMPLETED)
-                    await handle_completed(done)
+            # Start workers
+            workers = [asyncio.create_task(worker()) for _ in range(self.max_concurrent)]
 
-                task = asyncio.create_task(self.scan_single_ip(ip, version, port, session, deep_scan))
-                active_tasks.add(task)
+            # Feed IPs into the queue
+            ip_iterator = parse_ip_from_input(input_source, is_file=is_file)
+            for ip_item in ip_iterator:
+                await ip_queue.put(ip_item)
 
-            if active_tasks:
-                done, pending = await asyncio.wait(active_tasks)
-                await handle_completed(done)
+            # Signal workers to exit
+            for _ in range(self.max_concurrent):
+                await ip_queue.put(None)
+
+            # Wait for all tasks to be processed
+            await asyncio.gather(*workers)
         
         if progress_bar:
             progress_bar.close()
@@ -932,8 +940,7 @@ DISCLAIMER: Only scan networks you own or have explicit permission to test.
     parser.add_argument("--disable-dns-cache", action="store_true", help="Disable DNS caching")
     parser.add_argument("--no-progress", action="store_true", help="Suppress progress display")
     parser.add_argument("--no-ssl-verify", action="store_true", help="Disable SSL verification")
-    parser.add_argument("--batch-size", type=int, default=1000, help="Batch size for memory optimization (default: 1000)")
-    
+    parser.add_argument("--batch-size", type=int, default=1000, help="Batch size for memory optimization (legacy/compatibility)")
     args = parser.parse_args()
     
     if not args.range and not args.file:
