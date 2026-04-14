@@ -187,6 +187,8 @@ def validate_ip_range_static(ip_range: str) -> Iterator[Tuple[str, str]]:
     # Try CIDR notation first (both IPv4 and IPv6)
     try:
         network = IPv4Network(ip_range, strict=False)
+        # Use built-in is_private which covers 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, etc.
+        if not (network.is_private or network.is_loopback):
         if not network.is_private:
             logger.warning(f"⚠️  Scanning PUBLIC IPv4 range: {ip_display}. Ensure you have permission!")
         for ip in network:
@@ -197,6 +199,8 @@ def validate_ip_range_static(ip_range: str) -> Iterator[Tuple[str, str]]:
 
     try:
         network = IPv6Network(ip_range, strict=False)
+        # is_private for IPv6 covers fc00::/7 and other reserved ranges
+        if not (network.is_private or network.is_loopback):
         if not network.is_private:
             logger.warning(f"⚠️  Scanning PUBLIC IPv6 range: {ip_display}. Ensure you have permission!")
         for ip in network:
@@ -451,8 +455,6 @@ class OllamaScanner:
                         url,
                         headers=headers,
                         ssl=ssl_setting,
-                        timeout=timeout_val,
-                        allow_redirects=False
                         allow_redirects=False,
                         timeout=timeout_val
                     ) as response:
