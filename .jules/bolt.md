@@ -2,6 +2,10 @@
 **Learning:** Returning a full list of IPs from CIDR expansion (e.g., for /16 or /8 ranges) can cause memory exhaustion (OOM) and significant performance delays due to large allocations.
 **Action:** Always use generators/iterators for expanding large network ranges, and calculate the count of IPs mathematically instead of expanding the entire range.
 
-## 2026-04-12 - [Sliding Window Concurrency vs. Batch Processing]
-**Learning:** Batch-based asynchronous processing (using `asyncio.as_completed` on discrete batches) causes head-of-line blocking where a single slow task stalls the entire batch.
-**Action:** Use an `asyncio.Queue` worker-pool or a sliding window model with `asyncio.wait(..., return_when=FIRST_COMPLETED)` to maintain constant concurrency and maximize throughput in network-bound tasks.
+## 2026-01-15 - [Worker Queue Concurrency vs Batching]
+**Learning:** In asynchronous network scanners, batch-based concurrency () suffers from "head-of-line blocking" where a few slow targets can stall the entire batch.
+**Action:** Use a worker-pool model with  to maintain continuous throughput, allowing workers to immediately move to the next task as soon as they complete one.
+
+## 2026-01-15 - [Worker Queue Concurrency vs Batching]
+**Learning:** In asynchronous network scanners, batch-based concurrency suffers from 'head-of-line blocking' where a few slow targets can stall the entire batch.
+**Action:** Use a worker-pool model with asyncio.Queue to maintain continuous throughput, allowing workers to immediately move to the next task as soon as they complete one.
