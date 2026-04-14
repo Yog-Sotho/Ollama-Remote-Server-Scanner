@@ -556,8 +556,6 @@ class OllamaScanner:
                     url,
                     headers=headers,
                     ssl=ssl_setting,
-                    timeout=timeout_val,
-                    allow_redirects=False
                     allow_redirects=False,
                     timeout=timeout_val
                 ) as response:
@@ -621,8 +619,8 @@ class OllamaScanner:
                     headers=headers,
                     json=payload,
                     ssl=ssl_setting,
-                    timeout=timeout_val,
-                    allow_redirects=False
+                    allow_redirects=False,
+                    timeout=timeout_val
                 ) as response:
                     if response.status == 200:
                         try:

@@ -8,11 +8,7 @@
 **Learning:** Sanitizing untrusted server data is critical for CLI tools. Stripping `\r` along with other non-printable characters (except `\n` and `\t`) prevents line-overwrite attacks.
 **Prevention:** Implement a `sanitize_text` function with a module-level compiled regex to strip ANSI escapes and non-printable characters from all data fetched from remote endpoints before display or storage.
 
-## 2026-04-11 - [Security Enhancement] SSRF Protection & Comprehensive Private Network Detection
-**Vulnerability:** Potential SSRF via HTTP redirects and incomplete private network filtering allowing unintended scanning of local/reserved IP ranges.
-**Learning:** Manual subnet checks for private networks are often incomplete (missing loopback, link-local). aiohttp follows redirects by default, which is dangerous for scanners.
-**Prevention:** Use `ipaddress.network.is_private` for robust filtering and always set `allow_redirects=False` in scanning tools to prevent target-initiated SSRF.
-## 2026-04-05 - [Security Enhancement] SSRF Protection and Robust Private Network Detection
-**Vulnerability:** Potential SSRF if the scanner followed redirects to internal/unintended resources, and incomplete private network filtering using only manual CIDR checks.
-**Learning:** Network scanners must be "secure by default" by disabling redirects to prevent coercion into probing internal services. Manual subnet checks are often incomplete (missing loopback, link-local, etc.).
-**Prevention:** Always set `allow_redirects=False` in `aiohttp` requests to untrusted targets. Use `network.is_private` from the `ipaddress` module for robust and comprehensive private network detection across both IPv4 and IPv6.
+## 2026-04-05 - [Security Enhancement] SSRF Protection via Redirect Disabling
+**Vulnerability:** A scanner following HTTP redirects (301/302) can be coerced into probing internal-only services or unintended resources (SSRF) if a target IP responds with a redirect to a sensitive local address.
+**Learning:** Default `aiohttp` behavior is to follow redirects. In network scanning tools, this behavior should always be explicitly disabled for probes against untrusted remote targets.
+**Prevention:** Always set `allow_redirects=False` in `aiohttp` (or similar library) calls that are used to discover or probe remote services based on external input.
