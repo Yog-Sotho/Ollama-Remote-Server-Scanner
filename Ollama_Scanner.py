@@ -114,6 +114,63 @@ def format_target_url(ip: str, port: int) -> str:
     return f"http://{ip}:{port}"
 
 
+def count_ips_in_range_static(ip_range: str) -> int:
+    """
+    Mathematically calculate the number of IPs in a range or CIDR without expansion.
+    O(1) complexity for most formats.
+    """
+    if not ip_range.strip():
+        return 0
+
+    # Try CIDR notation
+    try:
+        network = IPv4Network(ip_range.strip(), strict=False)
+        return network.num_addresses
+    except ValueError:
+        pass
+
+    try:
+        network = IPv6Network(ip_range.strip(), strict=False)
+        return network.num_addresses
+    except ValueError:
+        pass
+
+    # Try IPv4 range notation like "192.168.1.1-10"
+    if '-' in ip_range:
+        parts = ip_range.split('-')
+        if len(parts) == 2:
+            start_ip_str, end_part = parts[0].strip(), parts[1].strip()
+            try:
+                start_ip = IPv4Address(start_ip_str)
+                if '.' in end_part:
+                    end_ip = IPv4Address(end_part)
+                    diff = int(end_ip) - int(start_ip)
+                    return max(0, diff + 1) if diff >= 0 else 0
+                else:
+                    end_suffix = int(end_part)
+                    base_parts = start_ip_str.split('.')
+                    start_num = int(base_parts[-1])
+                    diff = end_suffix - start_num
+                    return max(0, diff + 1) if diff >= 0 else 0
+            except (AddressValueError, ValueError):
+                pass
+
+    # Single IP
+    try:
+        IPv4Address(ip_range.strip())
+        return 1
+    except AddressValueError:
+        pass
+
+    try:
+        IPv6Address(ip_range.strip())
+        return 1
+    except AddressValueError:
+        pass
+
+    return 0
+
+
 def validate_ip_range_static(ip_range: str) -> Iterator[Tuple[str, str]]:
     """
     Validate and expand a single IP range into individual IPs
@@ -737,28 +794,15 @@ class OllamaScanner:
             headers={'Accept': 'application/json'}
         ) as session:
             ip_iterator = parse_ip_from_input(input_source, is_file=is_file)
-            
-            # Sliding window concurrency model: maintains continuous task flow without batching
-            pending = set()
 
-            while True:
-                # Refill task pool up to max_concurrent
-                while len(pending) < self.max_concurrent:
-                    try:
-                        ip_info = next(ip_iterator)
-                        ip, version = ip_info
-                        task = asyncio.create_task(self.scan_single_ip(ip, version, port, session, deep_scan))
-                        pending.add(task)
-                    except StopIteration:
-                        break
+            async for batch in self._batch_iterator(ip_iterator, batch_size=batch_size):
+                tasks = [
+                    asyncio.create_task(self.scan_single_ip(ip, version, port, session, deep_scan))
+                    for ip, version in batch
+                ]
 
-                if not pending:
-                    break
-
-                # Wait for any task to complete
-                done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
-                
-                for task in done:
+                # FIX STABILITY: Use as_completed but handle exceptions safely
+                for coro in asyncio.as_completed(tasks):
                     try:
                         result = await task
                         completed += 1
@@ -772,19 +816,16 @@ class OllamaScanner:
                                 # FIX TQDM: Use tqdm.tqdm.write() safely
                                 if HAS_TQDM and show_progress:
                                     tqdm.tqdm.write(f"\n✅ {result.server_type.value.upper()} Server: {result.url}")
-                                    tqdm.tqdm.write(
-                                        f"   Models ({len(result.models)}): {', '.join(result.models[:5])}{'...' if len(result.models) > 5 else ''}")
+                                    tqdm.tqdm.write(f"   Models ({len(result.models)}): {', '.join(result.models[:5])}{'...' if len(result.models) > 5 else ''}")
 
                                     if deep_scan and result.process_list:
                                         tqdm.tqdm.write(f"   🔄 Loaded: {len(result.process_list)} model(s) in RAM/VRAM")
                                 else:
                                     print(f"\n✅ {result.server_type.value.upper()} Server: {result.url}", flush=True)
-                                    print(
-                                        f"   Models ({len(result.models)}): {', '.join(result.models[:5])}{'...' if len(result.models) > 5 else ''}", flush=True)
+                                    print(f"   Models ({len(result.models)}): {', '.join(result.models[:5])}{'...' if len(result.models) > 5 else ''}", flush=True)
 
                                     if deep_scan and result.process_list:
-                                        print(
-                                            f"   🔄 Loaded: {len(result.process_list)} model(s) in RAM/VRAM", flush=True)
+                                        print(f"   🔄 Loaded: {len(result.process_list)} model(s) in RAM/VRAM", flush=True)
 
                             elif result.is_accessible:
                                 async with results_lock:
@@ -925,7 +966,7 @@ EXAMPLES:
   python Ollama_scanner_v4.2.py --file targets.txt                  # Read from file
   python Ollama_scanner_v4.2.py 192.168.1.0/24 --deep               # Deep API scan
   python Ollama_scanner_v4.2.py 192.168.1.0/24 -p 1234              # Custom port (LM Studio)
-  
+
 DISCLAIMER: Only scan networks you own or have explicit permission to test.
         """,
         formatter_class=argparse.RawDescriptionHelpFormatter
