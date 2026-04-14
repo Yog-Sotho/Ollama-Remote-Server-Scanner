@@ -715,11 +715,11 @@ class OllamaScanner:
                 return []
                 
         results: List[ScanResult] = []
-        results_lock = asyncio.Lock()
         start_time = time.time()
         completed = 0
         successes = 0
         
+        # Optimization: Match pool size to concurrency to prevent bottlenecking
         connector = aiohttp.TCPConnector(
             limit=self.max_concurrent + 50,
             limit_per_host=20,
@@ -740,62 +740,22 @@ class OllamaScanner:
             headers={'Accept': 'application/json'}
         ) as session:
             ip_iterator = parse_ip_from_input(input_source, is_file=is_file)
-            pending = set()
-            
-            # Sliding window concurrency model: maintains continuous task flow without batching
-            pending = set()
+            active_tasks = set()
 
-            while True:
-                # Refill task pool up to max_concurrent
-                while len(pending) < self.max_concurrent:
-            # BOLT OPTIMIZATION: Sliding window concurrency (continuous task flow)
-            # This prevents the "long-tail" effect where one slow task stalls an entire batch.
-            while True:
-                # Refill the pending set up to batch_size
-                while len(pending) < batch_size:
-                    try:
-                        ip_info = next(ip_iterator)
-                        ip, version = ip_info
-                        task = asyncio.create_task(self.scan_single_ip(ip, version, port, session, deep_scan))
-                        pending.add(task)
-                    except StopIteration:
-                        break
-                
-                if not pending:
-                    break
-
-                # Wait for any task to complete
-                done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
-
-
-                if not pending:
-                    break
-
-                # Wait for at least one task to complete
-                done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
-                
-                for task in done:
+            async def handle_completed(tasks):
+                nonlocal successes, completed
+                for task in tasks:
                     try:
                         result = await task
                         completed += 1
-                        
-                        if progress_bar:
-                            progress_bar.update(1)
-                        elif show_progress and (completed % 50 == 0 or completed == total_ips):
-                            elapsed = time.time() - start_time
-                            rate = completed / elapsed if elapsed > 0 else 0
-                            percent = (completed / total_ips) * 100 if total_ips > 0 else 0
-                            print(f"\r📈 Progress: {completed}/{total_ips} ({percent:.1f}%) | Rate: {rate:.1f} IPs/sec | Successes: {successes}",
-                                  end='', flush=True, file=sys.stderr)
-
                         if result:
                             successes += 1
                             if result.is_accessible and result.models:
-                                async with results_lock:
-                                    results.append(result)
-                                
+                                results.append(result)
                                 if HAS_TQDM and show_progress:
                                     tqdm.write(f"\n✅ {result.server_type.value.upper()} Server: {result.url}")
+                                    tqdm.write(f"   Models ({len(result.models)}): {', '.join(result.models[:5])}"
+                                               f"{'...' if len(result.models) > 5 else ''}")
                                     models_str = ', '.join(result.models[:5])
                                     suffix = '...' if len(result.models) > 5 else ''
                                     tqdm.write(f"   Models ({len(result.models)}): {models_str}{suffix}")
@@ -810,10 +770,8 @@ class OllamaScanner:
                                         
                                     if deep_scan and result.process_list:
                                         print(f"   🔄 Loaded: {len(result.process_list)} model(s) in RAM/VRAM", flush=True)
-                                    
                             elif result.is_accessible:
-                                async with results_lock:
-                                    results.append(result)
+                                results.append(result)
                                 if HAS_TQDM and show_progress:
                                     tqdm.write(f"✓ Open port at {result.url} - No models returned")
                                 else:
@@ -823,16 +781,32 @@ class OllamaScanner:
                                     tqdm.write(f"❌ Invalid server at {result.url}")
                                 else:
                                     print(f"❌ Invalid server at {result.url}", flush=True)
-                        
-                                  
+
+                        if progress_bar:
+                            progress_bar.update(1)
+                        elif show_progress and (completed % 50 == 0 or completed == total_ips):
+                            elapsed = time.time() - start_time
+                            rate = completed / elapsed if elapsed > 0 else 0
+                            percent = (completed / total_ips) * 100 if total_ips > 0 else 0
+                            print(f"\r📈 Progress: {completed}/{total_ips} ({percent:.1f}%) | "
+                                  f"Rate: {rate:.1f} IPs/sec | Successes: {successes}",
+                                  end='', flush=True, file=sys.stderr)
                     except asyncio.CancelledError:
-                        for p_task in pending:
-                            p_task.cancel()
                         raise
-                    
                     except Exception as e:
                         logger.error(f"Error processing task: {e}")
-                        continue
+
+            for ip, version in ip_iterator:
+                if len(active_tasks) >= self.max_concurrent:
+                    done, active_tasks = await asyncio.wait(active_tasks, return_when=asyncio.FIRST_COMPLETED)
+                    await handle_completed(done)
+
+                task = asyncio.create_task(self.scan_single_ip(ip, version, port, session, deep_scan))
+                active_tasks.add(task)
+
+            if active_tasks:
+                done, pending = await asyncio.wait(active_tasks)
+                await handle_completed(done)
         
         if progress_bar:
             progress_bar.close()
