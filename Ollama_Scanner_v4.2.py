@@ -391,8 +391,8 @@ class OllamaScanner:
                         url_tags,
                         headers=headers,
                         ssl=ssl_setting,
-                        timeout=aiohttp.ClientTimeout(total=self.timeout, connect=self.timeout / 2),
-                        allow_redirects=False
+                        allow_redirects=False,
+                        timeout=aiohttp.ClientTimeout(total=self.timeout, connect=self.timeout / 2)
                     ) as response:
                         if response.status == 200:
                             try:
@@ -572,8 +572,8 @@ class OllamaScanner:
                     headers=headers,
                     json=payload,
                     ssl=ssl_setting,
-                    timeout=aiohttp.ClientTimeout(total=self.timeout, connect=self.timeout / 2),
-                    allow_redirects=False
+                    allow_redirects=False,
+                    timeout=aiohttp.ClientTimeout(total=self.timeout, connect=self.timeout / 2)
                 ) as response:
                     if response.status == 200:
                         try:
