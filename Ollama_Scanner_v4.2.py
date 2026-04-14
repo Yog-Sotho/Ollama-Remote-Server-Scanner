@@ -658,26 +658,7 @@ class OllamaScanner:
             logger.debug(f"Unexpected error scanning {ip}:{port}: {e}")
             self.stats["scan_errors"] += 1
             return None
-
-    async def _batch_iterator(
-        self,
-        ip_iterator: Iterator[Tuple[str, str]],
-        batch_size: int = 1000
-    ) -> AsyncIterator[List[Tuple[str, str]]]:
-        """
-        Yield batches of IPs from the iterator
-
-        FIX 4.1: Corrected return type annotation to AsyncIterator
-        """
-        batch: List[Tuple[str, str]] = []
-        for ip_item in ip_iterator:
-            batch.append(ip_item)
-            if len(batch) >= batch_size:
-                yield batch
-                batch = []
-        if batch:
-            yield batch
-
+            
     def _count_ips_without_exhausting(self, input_source: str, is_file: bool = False) -> int:
         """
         Count total IPs without consuming the iterator
@@ -778,67 +759,101 @@ class OllamaScanner:
             progress_bar = tqdm.tqdm(total=total_ips, desc="Scanning", unit="IP", file=sys.stdout)
         else:
             progress_bar = None
+            
+        # Optimized worker-pool model to eliminate head-of-line blocking
+        queue = asyncio.Queue(maxsize=self.max_concurrent * 2)
+
+        async def worker():
+            nonlocal completed, successes
+            while True:
+                try:
+                    item = await queue.get()
+                    if item is None:
+                        queue.task_done()
+                        break
+
+                    ip, version = item
+                    result = await self.scan_single_ip(ip, version, port, session, deep_scan)
+                    completed += 1
+
+                    if result:
+                        successes += 1
+                        if result.is_accessible and result.models:
+                            async with results_lock:
+                                results.append(result)
+
+                            if HAS_TQDM and show_progress:
+                                tqdm.write(f"\n✅ {result.server_type.value.upper()} Server: {result.url}")
+                                tqdm.write(f"   Models ({len(result.models)}): {', '.join(result.models[:5])}{'...' if len(result.models) > 5 else ''}")
+
+                                if deep_scan and result.process_list:
+                                    tqdm.write(f"   🔄 Loaded: {len(result.process_list)} model(s) in RAM/VRAM")
+                            else:
+                                print(f"\n✅ {result.server_type.value.upper()} Server: {result.url}", flush=True)
+                                print(f"   Models ({len(result.models)}): {', '.join(result.models[:5])}{'...' if len(result.models) > 5 else ''}", flush=True)
+
+                                if deep_scan and result.process_list:
+                                    print(f"   🔄 Loaded: {len(result.process_list)} model(s) in RAM/VRAM", flush=True)
+
+                        elif result.is_accessible:
+                            async with results_lock:
+                                results.append(result)
+                            if HAS_TQDM and show_progress:
+                                tqdm.write(f"✓ Open port at {result.url} - No models returned")
+                            else:
+                                print(f"✓ Open port at {result.url} - No models returned", flush=True)
+                        else:
+                            if HAS_TQDM and show_progress:
+                                tqdm.write(f"❌ Invalid server at {result.url}")
+                            else:
+                                print(f"❌ Invalid server at {result.url}", flush=True)
+
+                    if progress_bar:
+                        progress_bar.update(1)
+                    elif show_progress and (completed % 50 == 0 or completed == total_ips):
+                        elapsed = time.time() - start_time
+                        rate = completed / elapsed if elapsed > 0 else 0
+                        percent = (completed / total_ips) * 100 if total_ips > 0 else 0
+                        print(f"\r📈 Progress: {completed}/{total_ips} ({percent:.1f}%) | Rate: {rate:.1f} IPs/sec | Successes: {successes}",
+                              end='', flush=True, file=sys.stderr)
+
+                    queue.task_done()
+                except asyncio.CancelledError:
+                    queue.task_done()
+                    break
+                except Exception as e:
+                    logger.error(f"Error in worker: {e}")
+                    queue.task_done()
 
         async with aiohttp.ClientSession(
             timeout=timeout_obj,
             connector=connector,
             headers={'Accept': 'application/json'}
         ) as session:
-            queue = asyncio.Queue(maxsize=batch_size)
-
-            async def worker():
-                nonlocal completed, successes
-                while True:
-                    item = await queue.get()
-                    try:
-                        if item is None:
-                            break
-
-                        ip, version = item
-                        result = await self.scan_single_ip(ip, version, port, session, deep_scan)
-
-                        async with results_lock:
-                            completed += 1
-                            if self._process_scan_result(result, results, show_progress, deep_scan):
-                                successes += 1
-
-                        if progress_bar:
-                            progress_bar.update(1)
-                        elif show_progress and (completed % 50 == 0 or completed == total_ips):
-                            elapsed = time.time() - start_time
-                            rate = completed / elapsed if elapsed > 0 else 0
-                            percent = (completed / total_ips) * 100 if total_ips > 0 else 0
-                            msg = f"\r📈 Progress: {completed}/{total_ips} ({percent:.1f}%) | " \
-                                  f"Rate: {rate:.1f} IPs/sec | Successes: {successes}"
-                            print(msg, end='', flush=True, file=sys.stderr)
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception as e:
-                        logger.error(f"Worker error scanning: {e}")
-                    finally:
-                        queue.task_done()
-
-            # Start worker pool
+            ip_iterator = parse_ip_from_input(input_source, is_file=is_file)
+            
+            # Create worker tasks
             workers = [asyncio.create_task(worker()) for _ in range(self.max_concurrent)]
 
+            # Producer: Populate the queue
             try:
-                # Feed the queue from the IP iterator
-                ip_iterator = parse_ip_from_input(input_source, is_file=is_file)
                 for ip_item in ip_iterator:
                     await queue.put(ip_item)
-
-                # Signal workers to exit
+                
+                # Add termination signals for workers
                 for _ in range(self.max_concurrent):
                     await queue.put(None)
 
-                # Wait for all workers to finish
+                # Wait for all workers to complete
                 await asyncio.gather(*workers)
-            except asyncio.CancelledError:
+            except (asyncio.CancelledError, Exception):
+                # Ensure all workers are cancelled if producer fails or is interrupted
                 for w in workers:
-                    w.cancel()
+                    if not w.done():
+                        w.cancel()
                 await asyncio.gather(*workers, return_exceptions=True)
                 raise
-
+        
         if progress_bar:
             progress_bar.close()
 
