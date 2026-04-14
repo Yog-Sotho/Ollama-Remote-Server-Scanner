@@ -196,6 +196,7 @@ def validate_ip_range_static(ip_range: str) -> Iterator[Tuple[str, str]]:
                 except AddressValueError:
                     continue
             return
+            
 
     # Single IP (try IPv4 first)
     try:
@@ -294,6 +295,17 @@ def parse_ip_from_input(input_source: str, is_file: bool = False) -> Iterator[Tu
         with open(input_source, 'r', encoding='utf-8') as f:
             for line_num, line in enumerate(f, 1):
                 line = line.strip()
+                if line and not line.startswith('#'):
+                    # Security: Truncate logging to prevent sensitive data leakage
+                    line_display = safe_display(line)
+                    try:
+                        count = 0
+                        for ip in validate_ip_range_static(line):
+                            yield ip
+                            count += 1
+                        logger.debug(f"Line {line_num}: '{line_display}' -> {count} IPs")
+                    except ValueError as e:
+                        logger.warning(f"Skipping invalid line {line_num} ('{line_display}'): {e}")
                 if not line or line.startswith('#'):
                     continue
                 # Security: Truncate logging to prevent sensitive data leakage
@@ -731,17 +743,30 @@ class OllamaScanner:
             headers={'Accept': 'application/json'}
         ) as session:
             ip_iterator = parse_ip_from_input(input_source, is_file=is_file)
+            
+            # Sliding window concurrency model: maintains continuous task flow without batching
+            pending = set()
 
-            async for batch in self._batch_iterator(ip_iterator, batch_size=batch_size):
-                tasks = [
-                    asyncio.create_task(self.scan_single_ip(ip, version, port, session, deep_scan))
-                    for ip, version in batch
-                ]
-
-                # FIX STABILITY: Use as_completed but handle exceptions safely
-                for coro in asyncio.as_completed(tasks):
+            while True:
+                # Refill task pool up to max_concurrent
+                while len(pending) < self.max_concurrent:
                     try:
-                        result = await coro
+                        ip_info = next(ip_iterator)
+                        ip, version = ip_info
+                        task = asyncio.create_task(self.scan_single_ip(ip, version, port, session, deep_scan))
+                        pending.add(task)
+                    except StopIteration:
+                        break
+
+                if not pending:
+                    break
+
+                # Wait for any task to complete
+                done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                
+                for task in done:
+                    try:
+                        result = await task
                         completed += 1
 
                         if result:
@@ -791,12 +816,12 @@ class OllamaScanner:
 
                     except asyncio.CancelledError:
                         # Cancel remaining tasks on interruption
-                        for t in tasks:
-                            t.cancel()
+                        for p_task in pending:
+                            p_task.cancel()
                         raise
 
                     except Exception as e:
-                        logger.error(f"Error processing task in batch: {e}")
+                        logger.error(f"Error processing task: {e}")
                         continue
 
                 # FIX FREEZING: Yield control to event loop between batches to prevent starvation
