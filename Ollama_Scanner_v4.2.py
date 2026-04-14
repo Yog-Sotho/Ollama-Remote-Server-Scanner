@@ -15,7 +15,7 @@ import json
 import re
 import sys
 import os
-from typing import List, Tuple, Optional, Dict, Any, Iterator, AsyncIterator
+from typing import List, Tuple, Optional, Dict, Iterator
 from ipaddress import IPv4Network, IPv4Address, AddressValueError, IPv6Network, IPv6Address
 import aiohttp
 import time
@@ -129,12 +129,9 @@ def validate_ip_range_static(ip_range: str) -> Iterator[Tuple[str, str]]:
     # Try CIDR notation first (both IPv4 and IPv6)
     try:
         network = IPv4Network(ip_range, strict=False)
-        private_check = any([
-            network.subnet_of(IPv4Network('10.0.0.0/8')),
-            network.subnet_of(IPv4Network('172.16.0.0/12')),
-            network.subnet_of(IPv4Network('192.168.0.0/16'))
-        ])
-        if not private_check:
+        # Use built-in is_private which covers 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, etc.
+        if not (network.is_private or network.is_loopback):
+        if not network.is_private:
             logger.warning(f"⚠️  Scanning PUBLIC IPv4 range: {ip_display}. Ensure you have permission!")
         for ip in network:
             yield (str(ip), 'IPv4')
@@ -144,8 +141,7 @@ def validate_ip_range_static(ip_range: str) -> Iterator[Tuple[str, str]]:
         
     try:
         network = IPv6Network(ip_range, strict=False)
-        is_private = network.subnet_of(IPv6Network('fc00::/7'))
-        if not is_private:
+        if not network.is_private:
             logger.warning(f"⚠️  Scanning PUBLIC IPv6 range: {ip_display}. Ensure you have permission!")
         for ip in network:
             yield (str(ip), 'IPv6')
@@ -379,9 +375,9 @@ class OllamaScanner:
         Semaphore acquired per-request, not held across all probes
         Per-endpoint retry logic
         """
-        url_tags = f"http://{ip}:{port}/api/tags"
-        url_models = f"http://{ip}:{port}/v1/models"
-        url_info = f"http://{ip}:{port}/api/info"
+        url_tags = f"{format_target_url(ip, port)}/api/tags"
+        url_models = f"{format_target_url(ip, port)}/v1/models"
+        url_info = f"{format_target_url(ip, port)}/api/info"
         headers = {'User-Agent': 'LLMScanner/4.2'}
         ssl_setting = not self.disable_ssl_verify
         
@@ -663,25 +659,6 @@ class OllamaScanner:
             self.stats["scan_errors"] += 1
             return None
             
-    async def _batch_iterator(
-        self,
-        ip_iterator: Iterator[Tuple[str, str]],
-        batch_size: int = 1000
-    ) -> AsyncIterator[List[Tuple[str, str]]]:
-        """
-        Yield batches of IPs from the iterator
-        
-        FIX 4.1: Corrected return type annotation to AsyncIterator
-        """
-        batch: List[Tuple[str, str]] = []
-        for ip_item in ip_iterator:
-            batch.append(ip_item)
-            if len(batch) >= batch_size:
-                yield batch
-                batch = []
-        if batch:
-            yield batch
-            
     def _count_ips_without_exhausting(self, input_source: str, is_file: bool = False) -> int:
         """
         Count total IPs without consuming the iterator
@@ -732,20 +709,24 @@ class OllamaScanner:
         print("-" * 70, file=sys.stderr)
         
         if total_ips > 10000:
-            confirm = input(f"\n⚠️  Warning: Scanning {total_ips} IPs may take significant time.\nContinue? (y/N): ").lower()
-            if confirm != 'y':
-                print("❌ Scan cancelled by user.", file=sys.stderr)
-                return []
+            # Check if running in a TTY before asking for input
+            if sys.stdin.isatty():
+                confirm = input(f"\n⚠️  Warning: Scanning {total_ips} IPs may take significant time.\nContinue? (y/N): ").lower()
+                if confirm != 'y':
+                    print("❌ Scan cancelled by user.", file=sys.stderr)
+                    return []
+            else:
+                logger.warning(f"Scanning {total_ips} IPs. Large scans may be slow.")
                 
         results: List[ScanResult] = []
-        results_lock = asyncio.Lock()
         start_time = time.time()
         completed = 0
         successes = 0
         
+        # Standardized connector limits: max_concurrent + 50 total, 20 per host
         connector = aiohttp.TCPConnector(
-            limit=256,
-            limit_per_host=10,
+            limit=self.max_concurrent + 50,
+            limit_per_host=20,
             ttl_dns_cache=300 if self.enable_dns_cache else None
         )
         timeout_obj = aiohttp.ClientTimeout(total=self.timeout, connect=self.timeout / 2)
@@ -762,43 +743,39 @@ class OllamaScanner:
             connector=connector,
             headers={'Accept': 'application/json'}
         ) as session:
-            ip_iterator = parse_ip_from_input(input_source, is_file=is_file)
+            ip_queue = asyncio.Queue(maxsize=self.max_concurrent * 2)
             
-            # FIX 5.1-5.2: Process batches sequentially instead of collecting all
-            async for batch in self._batch_iterator(ip_iterator, batch_size=batch_size):
-                tasks = [
-                    self.scan_single_ip(ip, version, port, session, deep_scan)
-                    for ip, version in batch
-                ]
-                
-                # Process tasks for this batch
-                for coro in asyncio.as_completed(tasks):
+            async def worker():
+                nonlocal completed, successes
+                while True:
                     try:
-                        result = await coro
+                        item = await ip_queue.get()
+                        if item is None:
+                            ip_queue.task_done()
+                            break
+
+                        ip, version = item
+                        result = await self.scan_single_ip(ip, version, port, session, deep_scan)
                         completed += 1
-                        
                         if result:
                             successes += 1
+
                             if result.is_accessible and result.models:
-                                async with results_lock:
-                                    results.append(result)
-                                
+                                # list.append is atomic in asyncio single-threaded event loop
+                                results.append(result)
                                 if HAS_TQDM and show_progress:
                                     tqdm.write(f"\n✅ {result.server_type.value.upper()} Server: {result.url}")
                                     tqdm.write(f"   Models ({len(result.models)}): {', '.join(result.models[:5])}{'...' if len(result.models) > 5 else ''}")
-                                    
                                     if deep_scan and result.process_list:
                                         tqdm.write(f"   🔄 Loaded: {len(result.process_list)} model(s) in RAM/VRAM")
                                 else:
                                     print(f"\n✅ {result.server_type.value.upper()} Server: {result.url}", flush=True)
                                     print(f"   Models ({len(result.models)}): {', '.join(result.models[:5])}{'...' if len(result.models) > 5 else ''}", flush=True)
-                                        
                                     if deep_scan and result.process_list:
                                         print(f"   🔄 Loaded: {len(result.process_list)} model(s) in RAM/VRAM", flush=True)
-                                    
                             elif result.is_accessible:
-                                async with results_lock:
-                                    results.append(result)
+                                # list.append is atomic in asyncio single-threaded event loop
+                                results.append(result)
                                 if HAS_TQDM and show_progress:
                                     tqdm.write(f"✓ Open port at {result.url} - No models returned")
                                 else:
@@ -808,23 +785,36 @@ class OllamaScanner:
                                     tqdm.write(f"❌ Invalid server at {result.url}")
                                 else:
                                     print(f"❌ Invalid server at {result.url}", flush=True)
-                        
+
                         if progress_bar:
                             progress_bar.update(1)
                         elif show_progress and (completed % 50 == 0 or completed == total_ips):
                             elapsed = time.time() - start_time
                             rate = completed / elapsed if elapsed > 0 else 0
                             percent = (completed / total_ips) * 100 if total_ips > 0 else 0
-                            print(f"\r📈 Progress: {completed}/{total_ips} ({percent:.1f}%) | Rate: {rate:.1f} IPs/sec | Successes: {successes}", 
+                            print(f"\r📈 Progress: {completed}/{total_ips} ({percent:.1f}%) | "
+                                  f"Rate: {rate:.1f} IPs/sec | Successes: {successes}",
                                   end='', flush=True, file=sys.stderr)
-                                  
-                    except asyncio.CancelledError:
-                        break
-                    
+
+                        ip_queue.task_done()
                     except Exception as e:
-                        # FIX 6.4: Log exception specifically
-                        logger.error(f"Error processing task in batch: {e}")
-                        continue
+                        logger.error(f"Worker error: {e}")
+                        ip_queue.task_done()
+
+            # Start workers
+            workers = [asyncio.create_task(worker()) for _ in range(self.max_concurrent)]
+
+            # Feed IPs into the queue
+            ip_iterator = parse_ip_from_input(input_source, is_file=is_file)
+            for ip_item in ip_iterator:
+                await ip_queue.put(ip_item)
+
+            # Signal workers to exit
+            for _ in range(self.max_concurrent):
+                await ip_queue.put(None)
+
+            # Wait for all tasks to be processed
+            await asyncio.gather(*workers)
         
         if progress_bar:
             progress_bar.close()
@@ -950,8 +940,7 @@ DISCLAIMER: Only scan networks you own or have explicit permission to test.
     parser.add_argument("--disable-dns-cache", action="store_true", help="Disable DNS caching")
     parser.add_argument("--no-progress", action="store_true", help="Suppress progress display")
     parser.add_argument("--no-ssl-verify", action="store_true", help="Disable SSL verification")
-    parser.add_argument("--batch-size", type=int, default=1000, help="Batch size for memory optimization (default: 1000)")
-    
+    parser.add_argument("--batch-size", type=int, default=1000, help="Batch size for memory optimization (legacy/compatibility)")
     args = parser.parse_args()
     
     if not args.range and not args.file:
