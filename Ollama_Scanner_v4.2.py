@@ -373,9 +373,9 @@ class OllamaScanner:
         Semaphore acquired per-request, not held across all probes
         Per-endpoint retry logic
         """
-        url_tags = f"http://{ip}:{port}/api/tags"
-        url_models = f"http://{ip}:{port}/v1/models"
-        url_info = f"http://{ip}:{port}/api/info"
+        url_tags = f"{format_target_url(ip, port)}/api/tags"
+        url_models = f"{format_target_url(ip, port)}/v1/models"
+        url_info = f"{format_target_url(ip, port)}/api/info"
         headers = {'User-Agent': 'LLMScanner/4.2'}
         ssl_setting = not self.disable_ssl_verify
         

@@ -130,12 +130,7 @@ def validate_ip_range_static(ip_range: str) -> Iterator[Tuple[str, str]]:
     # Try CIDR notation first (both IPv4 and IPv6)
     try:
         network = IPv4Network(ip_range, strict=False)
-        private_check = any([
-            network.subnet_of(IPv4Network('10.0.0.0/8')),
-            network.subnet_of(IPv4Network('172.16.0.0/12')),
-            network.subnet_of(IPv4Network('192.168.0.0/16'))
-        ])
-        if not private_check:
+        if not network.is_private:
             logger.warning(f"⚠️  Scanning PUBLIC IPv4 range: {ip_display}. Ensure you have permission!")
         for ip in network:
             yield (str(ip), 'IPv4')
@@ -145,8 +140,7 @@ def validate_ip_range_static(ip_range: str) -> Iterator[Tuple[str, str]]:
 
     try:
         network = IPv6Network(ip_range, strict=False)
-        is_private = network.subnet_of(IPv6Network('fc00::/7'))
-        if not is_private:
+        if not network.is_private:
             logger.warning(f"⚠️  Scanning PUBLIC IPv6 range: {ip_display}. Ensure you have permission!")
         for ip in network:
             yield (str(ip), 'IPv6')
@@ -445,7 +439,7 @@ class OllamaScanner:
         timeout_val = aiohttp.ClientTimeout(total=self.timeout, connect=1.5)
 
         # Try Ollama first
-        url_tags = f"http://{ip}:{port}/api/tags"
+        url_tags = f"{format_target_url(ip, port)}/api/tags"
         ollama_models = await self._single_probe_retry(
             session, url_tags,
             lambda d: [sanitize_text(m.get('name', 'unknown')) for m in d.get('models', [])],
@@ -457,7 +451,7 @@ class OllamaScanner:
             return (ServerType.OLLAMA, ollama_models, ScanStatus.SUCCESS)
 
         # Try LM Studio
-        url_models = f"http://{ip}:{port}/v1/models"
+        url_models = f"{format_target_url(ip, port)}/v1/models"
         lm_models = await self._single_probe_retry(
             session, url_models,
             lambda d: [sanitize_text(m.get('id', m.get('name', 'unknown'))) for m in d.get('data', [])],
@@ -469,7 +463,7 @@ class OllamaScanner:
             return (ServerType.LM_STUDIO, lm_models, ScanStatus.SUCCESS)
 
         # Try TextGen WebUI
-        url_info = f"http://{ip}:{port}/api/info"
+        url_info = f"{format_target_url(ip, port)}/api/info"
         tg_models = await self._single_probe_retry(
             session, url_info,
             lambda d: [sanitize_text(d.get('loading_model', d.get('model_name', 'unknown')))],
@@ -490,7 +484,7 @@ class OllamaScanner:
         session: aiohttp.ClientSession
     ) -> Tuple[List[Dict], ScanStatus]:
         """Get currently loaded models from Ollama server (/api/ps) with retry logic"""
-        url = f"http://{ip}:{port}/api/ps"
+        url = f"{format_target_url(ip, port)}/api/ps"
         headers = {'User-Agent': 'LLMScanner/4.2', 'Accept': 'application/json'}
         ssl_setting = not self.disable_ssl_verify
         timeout_val = aiohttp.ClientTimeout(total=self.timeout, connect=1.5)
@@ -547,7 +541,7 @@ class OllamaScanner:
         model_name: str
     ) -> Tuple[Optional[Dict], ScanStatus]:
         """Get model configuration details from Ollama server (/api/show) with retry logic"""
-        url = f"http://{ip}:{port}/api/show"
+        url = f"{format_target_url(ip, port)}/api/show"
         headers = {
             'User-Agent': 'LLMScanner/4.2',
             'Content-Type': 'application/json',
