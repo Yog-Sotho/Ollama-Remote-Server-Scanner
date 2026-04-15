@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Ollama Remote Server Scanner v4.2
-Scans IP ranges for open LLM servers (Ollama, LM Studio, TextGen WebUI
+Scans IP ranges for open LLM servers (Ollama, LM Studio, TextGen WebUI)
 DISCLAIMER: This tool is intended for authorized network administrators only.
 Using this tool against networks you do not own may violate local laws.
 Always obtain proper authorization before scanning any network.
@@ -189,7 +189,6 @@ def validate_ip_range_static(ip_range: str) -> Iterator[Tuple[str, str]]:
         network = IPv4Network(ip_range, strict=False)
         # Use built-in is_private which covers 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, etc.
         if not (network.is_private or network.is_loopback):
-        if not network.is_private:
             logger.warning(f"⚠️  Scanning PUBLIC IPv4 range: {ip_display}. Ensure you have permission!")
         for ip in network:
             yield (str(ip), 'IPv4')
@@ -201,7 +200,6 @@ def validate_ip_range_static(ip_range: str) -> Iterator[Tuple[str, str]]:
         network = IPv6Network(ip_range, strict=False)
         # is_private for IPv6 covers fc00::/7 and other reserved ranges
         if not (network.is_private or network.is_loopback):
-        if not network.is_private:
             logger.warning(f"⚠️  Scanning PUBLIC IPv6 range: {ip_display}. Ensure you have permission!")
         for ip in network:
             yield (str(ip), 'IPv6')
@@ -269,63 +267,6 @@ def validate_ip_range_static(ip_range: str) -> Iterator[Tuple[str, str]]:
         pass
 
     raise ValueError(f"Invalid IP address or range: {ip_display}")
-
-
-def count_ips_in_range_static(ip_range: str) -> int:
-    """
-    Mathematically calculate the number of IPs in a range or CIDR without expansion.
-    O(1) complexity for most formats.
-    """
-    if not ip_range.strip():
-        return 0
-
-    # Try CIDR notation
-    try:
-        network = IPv4Network(ip_range.strip(), strict=False)
-        return network.num_addresses
-    except ValueError:
-        pass
-
-    try:
-        network = IPv6Network(ip_range.strip(), strict=False)
-        return network.num_addresses
-    except ValueError:
-        pass
-
-    # Try IPv4 range notation like "192.168.1.1-10"
-    if '-' in ip_range:
-        parts = ip_range.split('-')
-        if len(parts) == 2:
-            start_ip_str, end_part = parts[0].strip(), parts[1].strip()
-            try:
-                start_ip = IPv4Address(start_ip_str)
-                if '.' in end_part:
-                    end_ip = IPv4Address(end_part)
-                    diff = int(end_ip) - int(start_ip)
-                    return max(0, diff + 1) if diff >= 0 else 0
-                else:
-                    end_suffix = int(end_part)
-                    base_parts = start_ip_str.split('.')
-                    start_num = int(base_parts[-1])
-                    diff = end_suffix - start_num
-                    return max(0, diff + 1) if diff >= 0 else 0
-            except (AddressValueError, ValueError):
-                pass
-
-    # Single IP
-    try:
-        IPv4Address(ip_range.strip())
-        return 1
-    except AddressValueError:
-        pass
-
-    try:
-        IPv6Address(ip_range.strip())
-        return 1
-    except AddressValueError:
-        pass
-
-    return 0
 
 
 def parse_ip_from_input(input_source: str, is_file: bool = False) -> Iterator[Tuple[str, str]]:
@@ -774,7 +715,6 @@ class OllamaScanner:
                 return []
 
         results: List[ScanResult] = []
-        results_lock = asyncio.Lock()
         start_time = time.time()
         completed = 0
         successes = 0
@@ -806,16 +746,15 @@ class OllamaScanner:
                 ]
 
                 # FIX STABILITY: Use as_completed but handle exceptions safely
-                for coro in asyncio.as_completed(tasks):
+                for task_coro in asyncio.as_completed(tasks):
                     try:
-                        result = await task
+                        result = await task_coro
                         completed += 1
 
                         if result:
                             successes += 1
                             if result.is_accessible and result.models:
-                                async with results_lock:
-                                    results.append(result)
+                                results.append(result)
 
                                 # FIX TQDM: Use tqdm.tqdm.write() safely
                                 if HAS_TQDM and show_progress:
@@ -832,8 +771,7 @@ class OllamaScanner:
                                         print(f"   🔄 Loaded: {len(result.process_list)} model(s) in RAM/VRAM", flush=True)
 
                             elif result.is_accessible:
-                                async with results_lock:
-                                    results.append(result)
+                                results.append(result)
                                 if HAS_TQDM and show_progress:
                                     tqdm.tqdm.write(f"✓ Open port at {result.url} - No models returned")
                                 else:
@@ -855,7 +793,7 @@ class OllamaScanner:
 
                     except asyncio.CancelledError:
                         # Cancel remaining tasks on interruption
-                        for p_task in pending:
+                        for p_task in tasks:
                             p_task.cancel()
                         raise
 
