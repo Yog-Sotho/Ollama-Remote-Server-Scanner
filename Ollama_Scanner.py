@@ -189,7 +189,6 @@ def validate_ip_range_static(ip_range: str) -> Iterator[Tuple[str, str]]:
         network = IPv4Network(ip_range, strict=False)
         # Use built-in is_private which covers 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, etc.
         if not (network.is_private or network.is_loopback):
-        if not network.is_private:
             logger.warning(f"⚠️  Scanning PUBLIC IPv4 range: {ip_display}. Ensure you have permission!")
         for ip in network:
             yield (str(ip), 'IPv4')
@@ -201,7 +200,6 @@ def validate_ip_range_static(ip_range: str) -> Iterator[Tuple[str, str]]:
         network = IPv6Network(ip_range, strict=False)
         # is_private for IPv6 covers fc00::/7 and other reserved ranges
         if not (network.is_private or network.is_loopback):
-        if not network.is_private:
             logger.warning(f"⚠️  Scanning PUBLIC IPv6 range: {ip_display}. Ensure you have permission!")
         for ip in network:
             yield (str(ip), 'IPv6')

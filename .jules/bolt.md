@@ -5,3 +5,7 @@
 ## 2026-04-14 - [Concurrency Model: Batching vs Worker Pool]
 **Learning:** Batch-based concurrency using `asyncio.as_completed` within sequential batches causes "head-of-line blocking." A single slow target in a batch prevents the next batch from starting, even if workers are idle.
 **Action:** Use a worker-pool model with an `asyncio.Queue` for I/O-bound tasks with heterogeneous latency to ensure continuous processing and maximum worker utilization.
+
+## 2026-05-15 - [Parallel Endpoint Probing Optimization]
+**Learning:** Sequential probing of multiple service endpoints (e.g., Ollama, LM Studio, TextGen) during a scan causes significant cumulative delays, especially on non-target open ports where each probe must wait for a timeout.
+**Action:** Use `asyncio.gather` to parallelize service detection probes at the same target, reducing the worst-case detection time to a single timeout duration.

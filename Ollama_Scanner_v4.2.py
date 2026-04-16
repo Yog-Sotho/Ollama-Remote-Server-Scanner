@@ -129,9 +129,8 @@ def validate_ip_range_static(ip_range: str) -> Iterator[Tuple[str, str]]:
     # Try CIDR notation first (both IPv4 and IPv6)
     try:
         network = IPv4Network(ip_range, strict=False)
-        # Use built-in is_private which covers 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, etc.
+        # Use built-in is_private/is_loopback which covers RFC 1918 and localhost
         if not (network.is_private or network.is_loopback):
-        if not network.is_private:
             logger.warning(f"⚠️  Scanning PUBLIC IPv4 range: {ip_display}. Ensure you have permission!")
         for ip in network:
             yield (str(ip), 'IPv4')
@@ -141,7 +140,7 @@ def validate_ip_range_static(ip_range: str) -> Iterator[Tuple[str, str]]:
 
     try:
         network = IPv6Network(ip_range, strict=False)
-        if not network.is_private:
+        if not (network.is_private or network.is_loopback):
             logger.warning(f"⚠️  Scanning PUBLIC IPv6 range: {ip_display}. Ensure you have permission!")
         for ip in network:
             yield (str(ip), 'IPv6')
@@ -358,6 +357,45 @@ class OllamaScanner:
             logger.debug(f"Unexpected error checking port {ip}:{port}: {e}")
             return (False, ScanStatus.CONNECTION_ERROR)
 
+    async def _probe_endpoint(
+        self,
+        session: aiohttp.ClientSession,
+        url: str,
+        server_type: ServerType,
+        parser_func
+    ) -> Optional[Tuple[ServerType, List[str]]]:
+        """Helper for endpoint probing with retry logic and backoff."""
+        headers = {'User-Agent': 'LLMScanner/4.2'}
+        ssl_setting = not self.disable_ssl_verify
+
+        for attempt in range(self.retry_attempts):
+            try:
+                async with self.semaphore:
+                    async with session.get(
+                        url,
+                        headers=headers,
+                        ssl=ssl_setting,
+                        timeout=aiohttp.ClientTimeout(total=self.timeout, connect=self.timeout / 2),
+                        allow_redirects=False
+                    ) as response:
+                        if response.status == 200:
+                            try:
+                                data = await response.json()
+                                models = parser_func(data)
+                                if models is not None:
+                                    return (server_type, models)
+                            except aiohttp.ContentTypeError:
+                                pass
+                        return None # Non-200 or bad content: fail fast as port is already open
+            except (asyncio.TimeoutError, aiohttp.ClientError):
+                if attempt < self.retry_attempts - 1:
+                    await asyncio.sleep(self.retry_delay * (2 ** attempt))
+                else:
+                    break
+            except Exception:
+                break
+        return None
+
     async def detect_server_type(
         self,
         ip: str,
@@ -365,135 +403,41 @@ class OllamaScanner:
         session: aiohttp.ClientSession
     ) -> Tuple[ServerType, Optional[List[str]], ScanStatus]:
         """
-        Detect which type of LLM server is running at the target
+        Detect which type of LLM server is running at the target.
 
-        Supports:
-        - Ollama (/api/tags)
-        - LM Studio (/v1/models)
-        - TextGen WebUI (/api/info)
-
-        Semaphore acquired per-request, not held across all probes
-        Per-endpoint retry logic
+        PERFORMANCE: Probes all supported server types (Ollama, LM Studio, TextGen WebUI)
+        concurrently using asyncio.gather to reduce total wait time on non-LLM open ports.
         """
-        url_tags = f"{format_target_url(ip, port)}/api/tags"
-        url_models = f"{format_target_url(ip, port)}/v1/models"
-        url_info = f"{format_target_url(ip, port)}/api/info"
-        headers = {'User-Agent': 'LLMScanner/4.2'}
-        ssl_setting = not self.disable_ssl_verify
+        base_url = format_target_url(ip, port)
 
-        ollama_attempts = 0
-        lmstudio_attempts = 0
-        textgen_attempts = 0
+        # Define probes for different LLM servers
+        tasks = [
+            # Ollama probe
+            self._probe_endpoint(
+                session, f"{base_url}/api/tags", ServerType.OLLAMA,
+                lambda d: [sanitize_text(m.get('name', 'unknown')) for m in d['models']] if 'models' in d else None
+            ),
+            # LM Studio probe
+            self._probe_endpoint(
+                session, f"{base_url}/v1/models", ServerType.LM_STUDIO,
+                lambda d: [sanitize_text(m.get('id', m.get('name', 'unknown'))) for m in d['data']] if 'data' in d else None
+            ),
+            # TextGen WebUI probe
+            self._probe_endpoint(
+                session, f"{base_url}/api/info", ServerType.TEXTGEN_WEBUI,
+                lambda d: [sanitize_text(d.get('loading_model', d.get('model_name', 'unknown')))]
+            )
+        ]
 
-        # Try Ollama first (most common)
-        while ollama_attempts < self.retry_attempts:
-            try:
-                async with self.semaphore:
-                    async with session.get(
-                        url_tags,
-                        headers=headers,
-                        ssl=ssl_setting,
-                        timeout=aiohttp.ClientTimeout(total=self.timeout, connect=self.timeout / 2),
-                        allow_redirects=False
-                    ) as response:
-                        if response.status == 200:
-                            try:
-                                data = await response.json()
-                                if 'models' in data:
-                                    models = [sanitize_text(model.get('name', 'unknown')) for model in data['models']]
-                                    self.stats["successful_queries"] += 1
-                                    self.stats[ServerType.OLLAMA.value + "_count"] += 1
-                                    return (ServerType.OLLAMA, models, ScanStatus.SUCCESS)
-                            except aiohttp.ContentTypeError:
-                                pass
-                        break
+        # Execute all probes concurrently
+        probe_results = await asyncio.gather(*tasks, return_exceptions=True)
 
-            except asyncio.TimeoutError:
-                ollama_attempts += 1
-                if ollama_attempts >= self.retry_attempts:
-                    self.stats["timeout"] += 1
-                    break
-                wait_time = self.retry_delay * (2 ** ollama_attempts)
-                await asyncio.sleep(wait_time)
-
-            except Exception as e:
-                ollama_attempts += 1
-                if ollama_attempts >= self.retry_attempts:
-                    self.stats["connection_error"] += 1
-                    break
-                wait_time = self.retry_delay * (2 ** ollama_attempts)
-                await asyncio.sleep(wait_time)
-
-        # Try LM Studio
-        while lmstudio_attempts < self.retry_attempts:
-            try:
-                async with self.semaphore:
-                    async with session.get(
-                        url_models,
-                        headers=headers,
-                        ssl=ssl_setting,
-                        timeout=aiohttp.ClientTimeout(total=self.timeout, connect=self.timeout / 2),
-                        allow_redirects=False
-                    ) as response:
-                        if response.status == 200:
-                            try:
-                                data = await response.json()
-                                if 'data' in data:
-                                    models = [sanitize_text(m.get('id', m.get('name', 'unknown'))) for m in data['data']]
-                                    self.stats[ServerType.LM_STUDIO.value + "_count"] += 1
-                                    return (ServerType.LM_STUDIO, models, ScanStatus.SUCCESS)
-                            except aiohttp.ContentTypeError:
-                                pass
-                        break
-
-            except asyncio.TimeoutError:
-                lmstudio_attempts += 1
-                if lmstudio_attempts >= self.retry_attempts:
-                    break
-                wait_time = self.retry_delay * (2 ** lmstudio_attempts)
-                await asyncio.sleep(wait_time)
-
-            except Exception as e:
-                lmstudio_attempts += 1
-                if lmstudio_attempts >= self.retry_attempts:
-                    break
-                wait_time = self.retry_delay * (2 ** lmstudio_attempts)
-                await asyncio.sleep(wait_time)
-
-        # Try TextGen WebUI
-        while textgen_attempts < self.retry_attempts:
-            try:
-                async with self.semaphore:
-                    async with session.get(
-                        url_info,
-                        headers=headers,
-                        ssl=ssl_setting,
-                        timeout=aiohttp.ClientTimeout(total=self.timeout, connect=self.timeout / 2),
-                        allow_redirects=False
-                    ) as response:
-                        if response.status == 200:
-                            try:
-                                data = await response.json()
-                                models = [sanitize_text(data.get('loading_model', data.get('model_name', 'unknown')))]
-                                self.stats[ServerType.TEXTGEN_WEBUI.value + "_count"] += 1
-                                return (ServerType.TEXTGEN_WEBUI, models, ScanStatus.SUCCESS)
-                            except aiohttp.ContentTypeError:
-                                pass
-                        break
-
-            except asyncio.TimeoutError:
-                textgen_attempts += 1
-                if textgen_attempts >= self.retry_attempts:
-                    break
-                wait_time = self.retry_delay * (2 ** textgen_attempts)
-                await asyncio.sleep(wait_time)
-
-            except Exception as e:
-                textgen_attempts += 1
-                if textgen_attempts >= self.retry_attempts:
-                    break
-                wait_time = self.retry_delay * (2 ** textgen_attempts)
-                await asyncio.sleep(wait_time)
+        for result in probe_results:
+            if result and not isinstance(result, Exception):
+                srv_type, models = result
+                self.stats["successful_queries"] += 1
+                self.stats[f"{srv_type.value}_count"] += 1
+                return (srv_type, models, ScanStatus.SUCCESS)
 
         return (ServerType.UNKNOWN, [], ScanStatus.NOT_OLLAMA)
 
@@ -779,8 +723,8 @@ class OllamaScanner:
                     if result:
                         successes += 1
                         if result.is_accessible and result.models:
-                            async with results_lock:
-                                results.append(result)
+                            # list.append is atomic in asyncio single-threaded event loop
+                            results.append(result)
 
                             if HAS_TQDM and show_progress:
                                 tqdm.write(f"\n✅ {result.server_type.value.upper()} Server: {result.url}")
@@ -796,8 +740,7 @@ class OllamaScanner:
                                     print(f"   🔄 Loaded: {len(result.process_list)} model(s) in RAM/VRAM", flush=True)
 
                         elif result.is_accessible:
-                            async with results_lock:
-                                results.append(result)
+                            results.append(result)
                             if HAS_TQDM and show_progress:
                                 tqdm.write(f"✓ Open port at {result.url} - No models returned")
                             else:
