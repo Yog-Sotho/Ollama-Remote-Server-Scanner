@@ -114,63 +114,6 @@ def format_target_url(ip: str, port: int) -> str:
     return f"http://{ip}:{port}"
 
 
-def count_ips_in_range_static(ip_range: str) -> int:
-    """
-    Mathematically calculate the number of IPs in a range or CIDR without expansion.
-    O(1) complexity for most formats.
-    """
-    if not ip_range.strip():
-        return 0
-
-    # Try CIDR notation
-    try:
-        network = IPv4Network(ip_range.strip(), strict=False)
-        return network.num_addresses
-    except ValueError:
-        pass
-
-    try:
-        network = IPv6Network(ip_range.strip(), strict=False)
-        return network.num_addresses
-    except ValueError:
-        pass
-
-    # Try IPv4 range notation like "192.168.1.1-10"
-    if '-' in ip_range:
-        parts = ip_range.split('-')
-        if len(parts) == 2:
-            start_ip_str, end_part = parts[0].strip(), parts[1].strip()
-            try:
-                start_ip = IPv4Address(start_ip_str)
-                if '.' in end_part:
-                    end_ip = IPv4Address(end_part)
-                    diff = int(end_ip) - int(start_ip)
-                    return max(0, diff + 1) if diff >= 0 else 0
-                else:
-                    end_suffix = int(end_part)
-                    base_parts = start_ip_str.split('.')
-                    start_num = int(base_parts[-1])
-                    diff = end_suffix - start_num
-                    return max(0, diff + 1) if diff >= 0 else 0
-            except (AddressValueError, ValueError):
-                pass
-
-    # Single IP
-    try:
-        IPv4Address(ip_range.strip())
-        return 1
-    except AddressValueError:
-        pass
-
-    try:
-        IPv6Address(ip_range.strip())
-        return 1
-    except AddressValueError:
-        pass
-
-    return 0
-
-
 def validate_ip_range_static(ip_range: str) -> Iterator[Tuple[str, str]]:
     """
     Validate and expand a single IP range into individual IPs
@@ -187,8 +130,8 @@ def validate_ip_range_static(ip_range: str) -> Iterator[Tuple[str, str]]:
     # Try CIDR notation first (both IPv4 and IPv6)
     try:
         network = IPv4Network(ip_range, strict=False)
-        # Use built-in is_private which covers 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, etc.
-        if not (network.is_private or network.is_loopback):
+        # Use is_global for better detection of public internet-routable addresses
+        if network.is_global:
             logger.warning(f"⚠️  Scanning PUBLIC IPv4 range: {ip_display}. Ensure you have permission!")
         for ip in network:
             yield (str(ip), 'IPv4')
@@ -198,8 +141,7 @@ def validate_ip_range_static(ip_range: str) -> Iterator[Tuple[str, str]]:
 
     try:
         network = IPv6Network(ip_range, strict=False)
-        # is_private for IPv6 covers fc00::/7 and other reserved ranges
-        if not (network.is_private or network.is_loopback):
+        if network.is_global:
             logger.warning(f"⚠️  Scanning PUBLIC IPv6 range: {ip_display}. Ensure you have permission!")
         for ip in network:
             yield (str(ip), 'IPv6')
@@ -218,6 +160,10 @@ def validate_ip_range_static(ip_range: str) -> Iterator[Tuple[str, str]]:
             start_ip = IPv4Address(start_ip_str)
         except AddressValueError:
             raise ValueError(f"Invalid start IP: {safe_display(start_ip_str)}")
+
+        # Hyphenated ranges can also target public IPs
+        if start_ip.is_global:
+            logger.warning(f"⚠️  Scanning PUBLIC IPv4 range: {ip_display}. Ensure you have permission!")
 
         if '.' in end_part:
             try:
@@ -253,15 +199,19 @@ def validate_ip_range_static(ip_range: str) -> Iterator[Tuple[str, str]]:
 
     # Single IP (try IPv4 first)
     try:
-        IPv4Address(ip_range.strip())
-        yield (ip_range.strip(), 'IPv4')
+        addr = IPv4Address(ip_range.strip())
+        if addr.is_global:
+            logger.warning(f"⚠️  Scanning PUBLIC IPv4 range: {ip_display}. Ensure you have permission!")
+        yield (str(addr), 'IPv4')
         return
     except AddressValueError:
         pass
 
     try:
-        IPv6Address(ip_range.strip())
-        yield (ip_range.strip(), 'IPv6')
+        addr = IPv6Address(ip_range.strip())
+        if addr.is_global:
+            logger.warning(f"⚠️  Scanning PUBLIC IPv6 range: {ip_display}. Ensure you have permission!")
+        yield (str(addr), 'IPv6')
         return
     except AddressValueError:
         pass
@@ -348,19 +298,9 @@ def parse_ip_from_input(input_source: str, is_file: bool = False) -> Iterator[Tu
         with open(input_source, 'r', encoding='utf-8') as f:
             for line_num, line in enumerate(f, 1):
                 line = line.strip()
-                if line and not line.startswith('#'):
-                    # Security: Truncate logging to prevent sensitive data leakage
-                    line_display = safe_display(line)
-                    try:
-                        count = 0
-                        for ip in validate_ip_range_static(line):
-                            yield ip
-                            count += 1
-                        logger.debug(f"Line {line_num}: '{line_display}' -> {count} IPs")
-                    except ValueError as e:
-                        logger.warning(f"Skipping invalid line {line_num} ('{line_display}'): {e}")
                 if not line or line.startswith('#'):
                     continue
+
                 # Security: Truncate logging to prevent sensitive data leakage
                 line_display = safe_display(line)
                 try:
@@ -806,7 +746,7 @@ class OllamaScanner:
                 # FIX STABILITY: Use as_completed but handle exceptions safely
                 for coro in asyncio.as_completed(tasks):
                     try:
-                        result = await task
+                        result = await coro
                         completed += 1
 
                         if result:
@@ -853,8 +793,9 @@ class OllamaScanner:
 
                     except asyncio.CancelledError:
                         # Cancel remaining tasks on interruption
-                        for p_task in pending:
-                            p_task.cancel()
+                        for p_task in tasks:
+                            if not p_task.done():
+                                p_task.cancel()
                         raise
 
                     except Exception as e:

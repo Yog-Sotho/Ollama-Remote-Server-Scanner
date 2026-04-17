@@ -12,3 +12,8 @@
 **Vulnerability:** A malicious remote server could return an HTTP 3xx redirect to an internal or sensitive service (e.g., cloud metadata endpoints, internal APIs), potentially coercing the scanner into probing unauthorized targets.
 **Learning:** Default `aiohttp` behavior is to follow redirects. For a network scanner probing untrusted endpoints, this behavior must be explicitly disabled to prevent Server-Side Request Forgery (SSRF).
 **Prevention:** Set `allow_redirects=False` in all `aiohttp` request calls (`session.get`, `session.post`) that target remote servers. This ensures the scanner only interacts with the explicitly targeted host and port.
+
+## 2026-04-17 - [Security Enhancement] Robust Public Network Detection
+**Vulnerability:** Accidental scanning of public internet-routable IP addresses. Previous checks used `not is_private`, which missed ranges like CGNAT (100.64.0.0/10) that are technically not private but also not global.
+**Learning:** The `ipaddress` module's `.is_global` property is the most reliable way to identify addresses routable on the public internet, as it accounts for various reserved and non-global ranges beyond just RFC 1918.
+**Prevention:** Use `ip_address.is_global` (or `ip_network.is_global`) to trigger security warnings when a user targets public network ranges. Ensure this check is applied consistently across all input formats (CIDR, hyphenated ranges, and single IPs).
