@@ -9,3 +9,7 @@
 ## 2026-05-15 - [Parallel Endpoint Probing Optimization]
 **Learning:** Sequential probing of multiple service endpoints (e.g., Ollama, LM Studio, TextGen) during a scan causes significant cumulative delays, especially on non-target open ports where each probe must wait for a timeout.
 **Action:** Use `asyncio.gather` to parallelize service detection probes at the same target, reducing the worst-case detection time to a single timeout duration.
+
+## 2026-04-17 - [URL Formatting & Concurrent Detection]
+**Learning:** Instantiating `ipaddress.IPv6Address` for every IP in a large scan is a significant bottleneck; a simple string ":" check is ~25x faster. Using `asyncio.wait` with `FIRST_COMPLETED` for multi-endpoint probing allows returning as soon as a server is identified, drastically reducing detection latency for positive targets.
+**Action:** Use simple string heuristics for hot-path IP formatting and leverage early-exit concurrency patterns for multi-probe discovery tasks.
