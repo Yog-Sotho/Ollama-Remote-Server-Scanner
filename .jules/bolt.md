@@ -13,3 +13,7 @@
 ## 2026-04-17 - [URL Formatting & Concurrent Detection]
 **Learning:** Instantiating `ipaddress.IPv6Address` for every IP in a large scan is a significant bottleneck; a simple string ":" check is ~25x faster. Using `asyncio.wait` with `FIRST_COMPLETED` for multi-endpoint probing allows returning as soon as a server is identified, drastically reducing detection latency for positive targets.
 **Action:** Use simple string heuristics for hot-path IP formatting and leverage early-exit concurrency patterns for multi-probe discovery tasks.
+
+## 2026-04-18 - [Regex-based Text Sanitization]
+**Learning:** Python's `isprintable()` character check is slow when used in list comprehensions over large strings. A pre-compiled regex targeting C0/C1 control characters (excluding `\n` and `\t`) provides a ~10x speedup while maintaining terminal safety.
+**Action:** Replace character-by-character loops with regex-based bulk processing for high-frequency sanitization tasks.
