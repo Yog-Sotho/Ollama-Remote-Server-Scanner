@@ -439,13 +439,14 @@ class OllamaScanner:
         base_url = format_target_url(ip, port)
 
         # Define probes for different LLM servers
+        # Security: Cap models to 50 to prevent memory exhaustion from malicious remote responses
         tasks_defs = [
             # Ollama probe
             (f"{base_url}/api/tags", ServerType.OLLAMA,
-             lambda d: [sanitize_text(m.get('name', 'unknown')) for m in d.get('models', [])]),
+             lambda d: [sanitize_text(m.get('name', 'unknown')) for m in d.get('models', [])[:50]]),
             # LM Studio probe
             (f"{base_url}/v1/models", ServerType.LM_STUDIO,
-             lambda d: [sanitize_text(m.get('id', m.get('name', 'unknown'))) for m in d.get('data', [])]),
+             lambda d: [sanitize_text(m.get('id', m.get('name', 'unknown'))) for m in d.get('data', [])[:50]]),
             # TextGen WebUI probe
             (f"{base_url}/api/info", ServerType.TEXTGEN_WEBUI,
              lambda d: [sanitize_text(d.get('loading_model', d.get('model_name', 'unknown')))])
@@ -499,7 +500,8 @@ class OllamaScanner:
                     if response.status == 200:
                         try:
                             data = await response.json()
-                            processes = data.get('models', [])
+                            # Security: Cap processes to 50 to prevent DoS
+                            processes = data.get('models', [])[:50]
                             # Sanitize process names to prevent terminal injection
                             for proc in processes:
                                 if 'name' in proc:

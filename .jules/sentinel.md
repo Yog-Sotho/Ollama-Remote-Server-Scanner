@@ -12,3 +12,8 @@
 **Vulnerability:** A malicious remote server could return an HTTP 3xx redirect to an internal or sensitive service (e.g., cloud metadata endpoints, internal APIs), potentially coercing the scanner into probing unauthorized targets.
 **Learning:** Default `aiohttp` behavior is to follow redirects. For a network scanner probing untrusted endpoints, this behavior must be explicitly disabled to prevent Server-Side Request Forgery (SSRF).
 **Prevention:** Set `allow_redirects=False` in all `aiohttp` request calls (`session.get`, `session.post`) that target remote servers. This ensures the scanner only interacts with the explicitly targeted host and port.
+
+## 2026-05-20 - [Security Enhancement] Resource Exhaustion Protection
+**Vulnerability:** A malicious or misconfigured remote LLM server could return an extremely large number of models or processes, potentially causing memory exhaustion (OOM) or excessive processing time in the scanner.
+**Learning:** Network scanners interacting with untrusted endpoints must enforce logical limits on the amount of data processed from any single response, even after the raw payload is received.
+**Prevention:** Implement a hard cap (e.g., 50 items) on all lists retrieved from remote APIs (like /api/tags or /api/ps) to ensure stable performance and resource usage regardless of the server's response size.
