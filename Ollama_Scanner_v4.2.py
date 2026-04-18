@@ -410,16 +410,17 @@ class OllamaScanner:
         base_url = format_target_url(ip, port)
 
         # Define probes for different LLM servers
+        # Security: Cap models to 50 to prevent memory exhaustion from malicious remote responses
         tasks = [
             # Ollama probe
             self._probe_endpoint(
                 session, f"{base_url}/api/tags", ServerType.OLLAMA,
-                lambda d: [sanitize_text(m.get('name', 'unknown')) for m in d['models']] if 'models' in d else None
+                lambda d: [sanitize_text(m.get('name', 'unknown')) for m in d['models'][:50]] if 'models' in d else None
             ),
             # LM Studio probe
             self._probe_endpoint(
                 session, f"{base_url}/v1/models", ServerType.LM_STUDIO,
-                lambda d: [sanitize_text(m.get('id', m.get('name', 'unknown'))) for m in d['data']] if 'data' in d else None
+                lambda d: [sanitize_text(m.get('id', m.get('name', 'unknown'))) for m in d['data'][:50]] if 'data' in d else None
             ),
             # TextGen WebUI probe
             self._probe_endpoint(
@@ -457,7 +458,7 @@ class OllamaScanner:
         session: aiohttp.ClientSession
     ) -> Tuple[Optional[List[Dict]], ScanStatus]:
         """Get currently loaded models from Ollama server (/api/ps) with retry logic"""
-        url = f"http://{ip}:{port}/api/ps"
+        url = f"{format_target_url(ip, port)}/api/ps"
         headers = {'User-Agent': 'LLMScanner/4.2', 'Accept': 'application/json'}
         ssl_setting = not self.disable_ssl_verify
 
@@ -473,7 +474,8 @@ class OllamaScanner:
                     if response.status == 200:
                         try:
                             data = await response.json()
-                            processes = data.get('models', [])
+                            # Security: Cap processes to 50 to prevent DoS
+                            processes = data.get('models', [])[:50]
                             # Sanitize process names to prevent terminal injection
                             for proc in processes:
                                 if 'name' in proc:
@@ -511,7 +513,7 @@ class OllamaScanner:
         model_name: str
     ) -> Tuple[Optional[Dict], ScanStatus]:
         """Get model configuration details from Ollama server (/api/show) with retry logic"""
-        url = f"http://{ip}:{port}/api/show"
+        url = f"{format_target_url(ip, port)}/api/show"
         headers = {
             'User-Agent': 'LLMScanner/4.2',
             'Content-Type': 'application/json',
