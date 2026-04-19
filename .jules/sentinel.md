@@ -17,3 +17,8 @@
 **Vulnerability:** A malicious or misconfigured remote LLM server could return an extremely large number of models or processes, potentially causing memory exhaustion (OOM) or excessive processing time in the scanner.
 **Learning:** Network scanners interacting with untrusted endpoints must enforce logical limits on the amount of data processed from any single response, even after the raw payload is received.
 **Prevention:** Implement a hard cap (e.g., 50 items) on all lists retrieved from remote APIs (like /api/tags or /api/ps) to ensure stable performance and resource usage regardless of the server's response size.
+
+## 2026-05-22 - [Security Enhancement] Resource Exhaustion via Malicious String Lengths
+**Vulnerability:** Untrusted data from remote servers could contain extremely long strings (model names, prompts, etc.), leading to memory exhaustion (DoS) or terminal pollution.
+**Learning:** Limiting the number of items in a response is only half the battle; the size of individual fields must also be capped to ensure total response size and processing overhead remain bounded.
+**Prevention:** Pass a `max_len` parameter to all sanitization routines for untrusted data, enforcing strict limits (e.g., 256 for identifiers, 1024 for content) at the point of ingestion.
