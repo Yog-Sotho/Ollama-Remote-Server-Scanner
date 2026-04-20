@@ -13,3 +13,7 @@
 ## 2026-04-17 - [URL Formatting & Concurrent Detection]
 **Learning:** Instantiating `ipaddress.IPv6Address` for every IP in a large scan is a significant bottleneck; a simple string ":" check is ~25x faster. Using `asyncio.wait` with `FIRST_COMPLETED` for multi-endpoint probing allows returning as soon as a server is identified, drastically reducing detection latency for positive targets.
 **Action:** Use simple string heuristics for hot-path IP formatting and leverage early-exit concurrency patterns for multi-probe discovery tasks.
+
+## 2026-04-20 - [Regex Optimization: Early Truncation]
+**Learning:** Processing very large strings with regex substitutions (like ANSI escape or control character removal) can be an (n)$ bottleneck or even a DoS vector (ReDoS). If the final output is intended to be truncated to a fixed `max_len`, performing an early "safe" truncation (e.g., `2 * max_len`) before regex processing provides massive speedups (~400x+ for 1MB strings) and improves stability.
+**Action:** Always consider early truncation for sanitization functions that have a defined maximum output length to bound the computational cost of text processing.

@@ -100,12 +100,19 @@ def sanitize_text(text: str, max_len: int = 1024) -> str:
     """
     if not isinstance(text, str):
         return text
+
+    # Optimization: Early truncation before regex processing to avoid ReDoS/OOM on huge strings.
+    # We truncate to 2x max_len to ensure we don't accidentally cut off half-sequences
+    # that would have been cleaned by the regex.
+    if len(text) > max_len * 2:
+        text = text[:max_len * 2]
+
     # Remove ANSI escape sequences
     text = ANSI_ESCAPE.sub('', text)
     # Remove non-printable control characters except common safe whitespace (\n, \t)
     # This is optimized with a pre-compiled regex for performance (~10x speedup)
     text = NON_PRINTABLE.sub('', text)
-    # Truncate to prevent memory exhaustion from untrusted data
+    # Final truncation to exact requested length
     if len(text) > max_len:
         text = text[:max_len]
     return text
