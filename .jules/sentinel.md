@@ -22,3 +22,8 @@
 **Vulnerability:** Untrusted data from remote servers could contain extremely long strings (model names, prompts, etc.), leading to memory exhaustion (DoS) or terminal pollution.
 **Learning:** Limiting the number of items in a response is only half the battle; the size of individual fields must also be capped to ensure total response size and processing overhead remain bounded.
 **Prevention:** Pass a `max_len` parameter to all sanitization routines for untrusted data, enforcing strict limits (e.g., 256 for identifiers, 1024 for content) at the point of ingestion.
+
+## 2026-04-20 - [Security Enhancement] Robust Public IP Detection
+**Vulnerability:** Scanners may inadvertently target public internet ranges when users provide single IPs or hyphenated ranges if warning logic only checks CIDR blocks using simple 'not private' filters.
+**Learning:** Manual exclusion filters (like `not (is_private or is_loopback)`) often miss edge cases like multicast, link-local, or reserved ranges. Python's `ipaddress` module provides `.is_global`, which more accurately identifies internet-routable addresses.
+**Prevention:** Use `network.is_global` or `address.is_global` to determine if a target is on the public internet. Ensure this check is applied to all input formats, including single addresses and hyphenated ranges, to maximize user awareness and prevent accidental unauthorized scanning.
