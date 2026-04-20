@@ -136,8 +136,8 @@ def validate_ip_range_static(ip_range: str) -> Iterator[Tuple[str, str]]:
     # Try CIDR notation first (both IPv4 and IPv6)
     try:
         network = IPv4Network(ip_range, strict=False)
-        # Use built-in is_private which covers 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, etc.
-        if not (network.is_private or network.is_loopback):
+        # Use built-in is_global which covers all internet-routable addresses
+        if network.is_global:
             logger.warning(f"⚠️  Scanning PUBLIC IPv4 range: {ip_display}. Ensure you have permission!")
         for ip in network:
             yield (str(ip), 'IPv4')
@@ -147,8 +147,7 @@ def validate_ip_range_static(ip_range: str) -> Iterator[Tuple[str, str]]:
 
     try:
         network = IPv6Network(ip_range, strict=False)
-        # is_private for IPv6 covers fc00::/7 and other reserved ranges
-        if not (network.is_private or network.is_loopback):
+        if network.is_global:
             logger.warning(f"⚠️  Scanning PUBLIC IPv6 range: {ip_display}. Ensure you have permission!")
         for ip in network:
             yield (str(ip), 'IPv6')
@@ -165,6 +164,8 @@ def validate_ip_range_static(ip_range: str) -> Iterator[Tuple[str, str]]:
 
         try:
             start_ip = IPv4Address(start_ip_str)
+            if start_ip.is_global:
+                logger.warning(f"⚠️  Scanning PUBLIC IPv4 range: {ip_display}. Ensure you have permission!")
         except AddressValueError:
             raise ValueError(f"Invalid start IP: {safe_display(start_ip_str)}")
 
@@ -201,14 +202,18 @@ def validate_ip_range_static(ip_range: str) -> Iterator[Tuple[str, str]]:
 
     # Single IP (try IPv4 first)
     try:
-        IPv4Address(ip_range.strip())
+        ip_obj = IPv4Address(ip_range.strip())
+        if ip_obj.is_global:
+            logger.warning(f"⚠️  Scanning PUBLIC IPv4 address: {ip_display}. Ensure you have permission!")
         yield (ip_range.strip(), 'IPv4')
         return
     except AddressValueError:
         pass
 
     try:
-        IPv6Address(ip_range.strip())
+        ip_obj = IPv6Address(ip_range.strip())
+        if ip_obj.is_global:
+            logger.warning(f"⚠️  Scanning PUBLIC IPv6 address: {ip_display}. Ensure you have permission!")
         yield (ip_range.strip(), 'IPv6')
         return
     except AddressValueError:
