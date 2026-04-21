@@ -17,3 +17,7 @@
 ## 2026-04-20 - [Regex Optimization: Early Truncation]
 **Learning:** Processing very large strings with regex substitutions (like ANSI escape or control character removal) can be an (n)$ bottleneck or even a DoS vector (ReDoS). If the final output is intended to be truncated to a fixed `max_len`, performing an early "safe" truncation (e.g., `2 * max_len`) before regex processing provides massive speedups (~400x+ for 1MB strings) and improves stability.
 **Action:** Always consider early truncation for sanitization functions that have a defined maximum output length to bound the computational cost of text processing.
+
+## 2026-05-20 - [Redundant Concurrency Control Bottleneck]
+**Learning:** Layering multiple concurrency control mechanisms (e.g., a worker pool AND a semaphore of the same size) can accidentally throttle parallel sub-tasks (like parallel endpoint probes) that are launched within each worker, as they all compete for the same limited semaphore slots.
+**Action:** Trust the worker pool and the underlying `aiohttp.TCPConnector` limits for request throttling, and avoid redundant semaphores that can bottleneck parallelization of sub-probes.
