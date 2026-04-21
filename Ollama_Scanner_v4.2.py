@@ -98,8 +98,9 @@ def sanitize_text(text: str, max_len: int = 1024) -> str:
     to prevent terminal injection attacks from remote server data.
     Also truncates to max_len to prevent OOM/DoS from large malicious responses.
     """
+    # Security: Ensure input is always treated as a string to prevent downstream crashes
     if not isinstance(text, str):
-        return text
+        text = str(text)
 
     # Optimization: Early truncation before regex processing to avoid ReDoS/OOM on huge strings.
     # We truncate to 2x max_len to ensure we don't accidentally cut off half-sequences
@@ -430,23 +431,26 @@ class OllamaScanner:
 
         # Define probes for different LLM servers
         # Security: Cap models to 50 to prevent memory exhaustion from malicious remote responses
+        # Logic: Added defensive type checks in lambda parsers to handle malformed JSON responses
         tasks = [
             # Ollama probe
             self._probe_endpoint(
                 session, f"{base_url}/api/tags", ServerType.OLLAMA,
-                lambda d: [sanitize_text(m.get('name', 'unknown'), max_len=256)
-                           for m in d['models'][:50]] if 'models' in d else None
+                lambda d: [sanitize_text(m.get('name', 'unknown') if isinstance(m, dict) else 'invalid_item', max_len=256)
+                           for m in d.get('models', [])[:50]] if isinstance(d, dict) else None
             ),
             # LM Studio probe
             self._probe_endpoint(
                 session, f"{base_url}/v1/models", ServerType.LM_STUDIO,
-                lambda d: [sanitize_text(m.get('id', m.get('name', 'unknown')), max_len=256)
-                           for m in d['data'][:50]] if 'data' in d else None
+                lambda d: [sanitize_text(m.get('id', m.get('name', 'unknown')) if isinstance(m, dict) else 'invalid_item',
+                                         max_len=256)
+                           for m in d.get('data', [])[:50]] if isinstance(d, dict) else None
             ),
             # TextGen WebUI probe
             self._probe_endpoint(
                 session, f"{base_url}/api/info", ServerType.TEXTGEN_WEBUI,
                 lambda d: [sanitize_text(d.get('loading_model', d.get('model_name', 'unknown')), max_len=256)]
+                if isinstance(d, dict) else None
             )
         ]
 
@@ -495,11 +499,13 @@ class OllamaScanner:
                     if response.status == 200:
                         try:
                             data = await response.json()
+                            if not isinstance(data, dict):
+                                return ([], ScanStatus.INVALID_RESPONSE)
                             # Security: Cap processes to 50 to prevent DoS
                             processes = data.get('models', [])[:50]
                             # Sanitize process names to prevent terminal injection
                             for proc in processes:
-                                if 'name' in proc:
+                                if isinstance(proc, dict) and 'name' in proc:
                                     proc['name'] = sanitize_text(proc['name'], max_len=256)
                             self.stats["process_status_success"] += 1
                             return (processes, ScanStatus.SUCCESS)
@@ -556,6 +562,8 @@ class OllamaScanner:
                     if response.status == 200:
                         try:
                             data = await response.json()
+                            if not isinstance(data, dict):
+                                return (None, ScanStatus.INVALID_RESPONSE)
                             config = {
                                 "system_prompt": sanitize_text(data.get("system", ""), max_len=1024),
                                 "parameters": sanitize_text(data.get("parameters", ""), max_len=1024),

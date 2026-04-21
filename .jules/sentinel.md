@@ -27,3 +27,8 @@
 **Vulnerability:** Scanners may inadvertently target public internet ranges when users provide single IPs or hyphenated ranges if warning logic only checks CIDR blocks using simple 'not private' filters.
 **Learning:** Manual exclusion filters (like `not (is_private or is_loopback)`) often miss edge cases like multicast, link-local, or reserved ranges. Python's `ipaddress` module provides `.is_global`, which more accurately identifies internet-routable addresses.
 **Prevention:** Use `network.is_global` or `address.is_global` to determine if a target is on the public internet. Ensure this check is applied to all input formats, including single addresses and hyphenated ranges, to maximize user awareness and prevent accidental unauthorized scanning.
+
+## 2026-05-24 - [Security Enhancement] Robust Untrusted Data Type Validation
+**Vulnerability:** Malformed or malicious JSON responses from remote servers could return unexpected data types (e.g., lists where strings are expected), causing application crashes (DoS) during data processing or display.
+**Learning:** Even with schema-like keys, the values in untrusted JSON responses must be explicitly type-checked. Downstream operations like string `join()` or regex substitution fail catastrophically if they receive non-string types.
+**Prevention:** Always use `isinstance(data, dict)` when parsing JSON responses and ensure sanitization functions like `sanitize_text` explicitly cast input to `str` before processing. Add defensive checks for nested items within lists returned by remote APIs.
