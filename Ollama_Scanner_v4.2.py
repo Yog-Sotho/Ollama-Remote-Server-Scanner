@@ -344,7 +344,6 @@ class OllamaScanner:
         self.enable_dns_cache = enable_dns_cache
         self.disable_ssl_verify = disable_ssl_verify
         self.port_timeout = port_timeout if port_timeout is not None else timeout / 2
-        self.semaphore = asyncio.Semaphore(max_concurrent)
         # FIX 4.1: Removed unused dns_cache dictionary (TTL handled by TCPConnector)
         self.stats: Dict[str, int] = defaultdict(int)
 
@@ -390,23 +389,22 @@ class OllamaScanner:
 
         for attempt in range(self.retry_attempts):
             try:
-                async with self.semaphore:
-                    async with session.get(
-                        url,
-                        headers=headers,
-                        ssl=ssl_setting,
-                        timeout=aiohttp.ClientTimeout(total=self.timeout, connect=self.timeout / 2),
-                        allow_redirects=False
-                    ) as response:
-                        if response.status == 200:
-                            try:
-                                data = await response.json()
-                                models = parser_func(data)
-                                if models is not None:
-                                    return (server_type, models)
-                            except aiohttp.ContentTypeError:
-                                pass
-                        return None  # Non-200 or bad content: fail fast as port is already open
+                async with session.get(
+                    url,
+                    headers=headers,
+                    ssl=ssl_setting,
+                    timeout=aiohttp.ClientTimeout(total=self.timeout, connect=self.timeout / 2),
+                    allow_redirects=False
+                ) as response:
+                    if response.status == 200:
+                        try:
+                            data = await response.json()
+                            models = parser_func(data)
+                            if models is not None:
+                                return (server_type, models)
+                        except aiohttp.ContentTypeError:
+                            pass
+                    return None  # Non-200 or bad content: fail fast as port is already open
             except (asyncio.TimeoutError, aiohttp.ClientError):
                 if attempt < self.retry_attempts - 1:
                     await asyncio.sleep(self.retry_delay * (2 ** attempt))
@@ -636,7 +634,7 @@ class OllamaScanner:
             logger.debug(f"Unexpected error scanning {ip}:{port}: {e}")
             self.stats["scan_errors"] += 1
             return None
-            
+
     def _count_ips_without_exhausting(self, input_source: str, is_file: bool = False) -> int:
         """
         Count total IPs without consuming the iterator
@@ -668,14 +666,17 @@ class OllamaScanner:
 
         if result.is_accessible and result.models:
             results.append(result)
+            m_count = len(result.models)
+            m_list = ', '.join(result.models[:5])
+            m_suffix = '...' if m_count > 5 else ''
             if HAS_TQDM and show_progress:
                 tqdm.write(f"\n✅ {result.server_type.value.upper()} Server: {result.url}")
-                tqdm.write(f"   Models ({len(result.models)}): {', '.join(result.models[:5])}{'...' if len(result.models) > 5 else ''}")
+                tqdm.write(f"   Models ({m_count}): {m_list}{m_suffix}")
                 if deep_scan and result.process_list:
                     tqdm.write(f"   🔄 Loaded: {len(result.process_list)} model(s) in RAM/VRAM")
             else:
                 print(f"\n✅ {result.server_type.value.upper()} Server: {result.url}", flush=True)
-                print(f"   Models ({len(result.models)}): {', '.join(result.models[:5])}{'...' if len(result.models) > 5 else ''}", flush=True)
+                print(f"   Models ({m_count}): {m_list}{m_suffix}", flush=True)
                 if deep_scan and result.process_list:
                     print(f"   🔄 Loaded: {len(result.process_list)} model(s) in RAM/VRAM", flush=True)
             return True
@@ -726,8 +727,9 @@ class OllamaScanner:
         successes = 0
 
         # Performance tuning: Scale connector limits with max_concurrent
+        # Set to 2x max_concurrent to accommodate parallel endpoint probing
         connector = aiohttp.TCPConnector(
-            limit=self.max_concurrent + 50,
+            limit=self.max_concurrent * 2,
             limit_per_host=20,
             ttl_dns_cache=300 if self.enable_dns_cache else None
         )
@@ -737,7 +739,7 @@ class OllamaScanner:
             progress_bar = tqdm.tqdm(total=total_ips, desc="Scanning", unit="IP", file=sys.stdout)
         else:
             progress_bar = None
-            
+
         # Optimized worker-pool model to eliminate head-of-line blocking
         queue = asyncio.Queue(maxsize=self.max_concurrent * 2)
 
@@ -760,15 +762,18 @@ class OllamaScanner:
                             # list.append is atomic in asyncio single-threaded event loop
                             results.append(result)
 
+                            m_list = ', '.join(result.models[:5])
+                            m_suffix = '...' if len(result.models) > 5 else ''
+
                             if HAS_TQDM and show_progress:
                                 tqdm.write(f"\n✅ {result.server_type.value.upper()} Server: {result.url}")
-                                tqdm.write(f"   Models ({len(result.models)}): {', '.join(result.models[:5])}{'...' if len(result.models) > 5 else ''}")
+                                tqdm.write(f"   Models ({len(result.models)}): {m_list}{m_suffix}")
 
                                 if deep_scan and result.process_list:
                                     tqdm.write(f"   🔄 Loaded: {len(result.process_list)} model(s) in RAM/VRAM")
                             else:
                                 print(f"\n✅ {result.server_type.value.upper()} Server: {result.url}", flush=True)
-                                print(f"   Models ({len(result.models)}): {', '.join(result.models[:5])}{'...' if len(result.models) > 5 else ''}", flush=True)
+                                print(f"   Models ({len(result.models)}): {m_list}{m_suffix}", flush=True)
 
                                 if deep_scan and result.process_list:
                                     print(f"   🔄 Loaded: {len(result.process_list)} model(s) in RAM/VRAM", flush=True)
@@ -791,8 +796,9 @@ class OllamaScanner:
                         elapsed = time.time() - start_time
                         rate = completed / elapsed if elapsed > 0 else 0
                         percent = (completed / total_ips) * 100 if total_ips > 0 else 0
-                        print(f"\r📈 Progress: {completed}/{total_ips} ({percent:.1f}%) | Rate: {rate:.1f} IPs/sec | Successes: {successes}",
-                              end='', flush=True, file=sys.stderr)
+                        msg = (f"\r📈 Progress: {completed}/{total_ips} ({percent:.1f}%) | "
+                               f"Rate: {rate:.1f} IPs/sec | Successes: {successes}")
+                        print(msg, end='', flush=True, file=sys.stderr)
 
                     queue.task_done()
                 except asyncio.CancelledError:
@@ -808,7 +814,7 @@ class OllamaScanner:
             headers={'Accept': 'application/json'}
         ) as session:
             ip_iterator = parse_ip_from_input(input_source, is_file=is_file)
-            
+
             # Create worker tasks
             workers = [asyncio.create_task(worker()) for _ in range(self.max_concurrent)]
 
@@ -816,7 +822,7 @@ class OllamaScanner:
             try:
                 for ip_item in ip_iterator:
                     await queue.put(ip_item)
-                
+
                 # Add termination signals for workers
                 for _ in range(self.max_concurrent):
                     await queue.put(None)
@@ -830,7 +836,7 @@ class OllamaScanner:
                         w.cancel()
                 await asyncio.gather(*workers, return_exceptions=True)
                 raise
-        
+
         if progress_bar:
             progress_bar.close()
 
@@ -848,7 +854,7 @@ class OllamaScanner:
             print(f"  • Process status checks: {self.stats.get('process_status_success', 0)}", file=sys.stderr)
             print(f"  • Model info retrieved:  {self.stats.get('model_info_success', 0)}", file=sys.stderr)
 
-        print(f"\n📋 Discovered Server Types:", file=sys.stderr)
+        print("\n📋 Discovered Server Types:", file=sys.stderr)
         print(f"  • Ollama:         {self.stats.get('ollama_count', 0)}", file=sys.stderr)
         print(f"  • LM Studio:      {self.stats.get('lmstudio_count', 0)}", file=sys.stderr)
         print(f"  • TextGen WebUI:  {self.stats.get('textgen_webui_count', 0)}", file=sys.stderr)
@@ -856,7 +862,7 @@ class OllamaScanner:
         if total_ips > 0:
             print(f"  • Overall success rate:  {(successes / total_ips * 100):.2f}%", file=sys.stderr)
         else:
-            print(f"  • Overall success rate:  N/A (No IPs)", file=sys.stderr)
+            print("  • Overall success rate:  N/A (No IPs)", file=sys.stderr)
 
         return results
 
@@ -945,17 +951,20 @@ DISCLAIMER: Only scan networks you own or have explicit permission to test.
     parser.add_argument("range", nargs="?", help="IP range to scan (CIDR notation, e.g., 192.168.1.0/24)")
     parser.add_argument("-f", "--file", help="File containing IP addresses/ranges (one per line)")
     parser.add_argument("-p", "--port", type=int, default=11434, help="Port to scan (default: 11434 Ollama)")
-    parser.add_argument("-t", "--timeout", type=float, default=5.0, help="Connection timeout in seconds (default: 5)")
+    parser.add_argument("-t", "--timeout", type=float, default=5.0,
+                        help="Connection timeout in seconds (default: 5)")
     parser.add_argument("-c", "--concurrent", type=int, default=100, help="Max concurrent connections (default: 100)")
     parser.add_argument("-r", "--retries", type=int, default=3, help="Retry attempts per target (default: 3)")
-    parser.add_argument("-d", "--retry-delay", type=float, default=0.5, help="Base delay between retries (default: 0.5)")
+    parser.add_argument("-d", "--retry-delay", type=float, default=0.5,
+                        help="Base delay between retries (default: 0.5)")
     parser.add_argument("-o", "--output", help="Base name for output files")
     parser.add_argument("--deep", action="store_true", help="Perform deep API scan (/api/ps, /api/show)")
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable debug logging")
     parser.add_argument("--disable-dns-cache", action="store_true", help="Disable DNS caching")
     parser.add_argument("--no-progress", action="store_true", help="Suppress progress display")
     parser.add_argument("--no-ssl-verify", action="store_true", help="Disable SSL verification")
-    parser.add_argument("--batch-size", type=int, default=1000, help="Batch size for memory optimization (default: 1000)")
+    parser.add_argument("--batch-size", type=int, default=1000,
+                        help="Batch size for memory optimization (default: 1000)")
 
     args = parser.parse_args()
 
@@ -1053,7 +1062,7 @@ DISCLAIMER: Only scan networks you own or have explicit permission to test.
     for idx, result in enumerate(results, 1):
         # FIX 6.3: Consistent flush=True throughout
         print(f"\n{idx}. {result.url}", flush=True)
-        print(f"   ✓ Status: ACCESSIBLE", flush=True)
+        print("   ✓ Status: ACCESSIBLE", flush=True)
         print(f"   🔧 Server Type: {result.server_type.value.upper()}", flush=True)
         print(f"   📦 Models: {len(result.models)} total", flush=True)
         print(f"   📝 List: {', '.join(result.models[:10])}", flush=True)
@@ -1062,7 +1071,7 @@ DISCLAIMER: Only scan networks you own or have explicit permission to test.
 
         if args.deep:
             if result.process_list:
-                print(f"\n   🔄 LOADED IN RAM/VRAM:", flush=True)
+                print("\n   🔄 LOADED IN RAM/VRAM:", flush=True)
                 for proc in result.process_list[:5]:
                     name = proc.get('name', 'unknown')
                     size_gb = proc.get('size', 0) / (1024**3)
@@ -1071,7 +1080,7 @@ DISCLAIMER: Only scan networks you own or have explicit permission to test.
                     print(f"      └─ ... and {len(result.process_list) - 5} more", flush=True)
 
             if result.model_configs:
-                print(f"\n   ⚙️  MODEL CONFIGURATIONS:", flush=True)
+                print("\n   ⚙️  MODEL CONFIGURATIONS:", flush=True)
                 for mc in result.model_configs[:3]:
                     name = mc.get('model_name', 'unknown')
                     config = mc.get('config', {})
@@ -1080,7 +1089,8 @@ DISCLAIMER: Only scan networks you own or have explicit permission to test.
                     print(f"      ├─ {name}", flush=True)
                     if system:
                         preview = system[:60].replace('\n', ' ')
-                        print(f"      │   System: {preview}..." if len(system) > 60 else f"      │   System: {preview}", flush=True)
+                        print(f"      │   System: {preview}..." if len(system) > 60
+                              else f"      │   System: {preview}", flush=True)
                     if params:
                         print(f"      │   Params: {params[:50] if len(params) > 50 else params}", flush=True)
                 if len(result.model_configs) > 3:
