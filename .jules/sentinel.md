@@ -32,3 +32,13 @@
 **Vulnerability:** Malformed or malicious JSON responses from remote servers could return unexpected data types (e.g., lists where strings are expected), causing application crashes (DoS) during data processing or display.
 **Learning:** Even with schema-like keys, the values in untrusted JSON responses must be explicitly type-checked. Downstream operations like string `join()` or regex substitution fail catastrophically if they receive non-string types.
 **Prevention:** Always use `isinstance(data, dict)` when parsing JSON responses and ensure sanitization functions like `sanitize_text` explicitly cast input to `str` before processing. Add defensive checks for nested items within lists returned by remote APIs.
+
+## 2026-05-26 - [Security Enhancement] Preventing Terminal Output Spoofing
+**Vulnerability:** A malicious remote server could return newlines (`\n`) in model names or metadata, allowing it to inject arbitrary lines into the scanner's CLI output. This can be used to spoof status messages (e.g., "✓ Status: COMPROMISED") or hide real results.
+**Learning:** Sanitizing for "printability" is insufficient for CLI tools if newlines are explicitly exempted. Untrusted data must be treated as single-line identifiers to maintain the integrity of the CLI interface.
+**Prevention:** Include `\n` and `\t` in the `NON_PRINTABLE` regex. All data fetched from remote endpoints must be strictly sanitized to prevent any multi-line injection before being displayed in the terminal.
+
+## 2026-05-26 - [Security Enhancement] Null-Safe JSON Parsing for Hostile Endpoints
+**Vulnerability:** The scanner could crash (DoS) if a scanned target returns a JSON response where an expected list key (like `models`) exists but has a `null` value.
+**Learning:** Python's `dict.get(key, default)` only applies the default if the key is missing. If the key exists with a `None` value, `get` returns `None`, causing subsequent operations (like slicing `[:50]`) to fail with a `TypeError`.
+**Prevention:** Use the `(data.get('key') or [])` pattern when accessing expected collection fields in untrusted JSON responses. This ensures the application always has a valid iterable even if the remote server sends `null`.
