@@ -639,13 +639,20 @@ class OllamaScanner:
             model_configs = []
 
             if deep_scan and models and server_type == ServerType.OLLAMA:
-                process_list, ps_status = await self.get_process_status_ollama(ip, port, session)
+                # PERFORMANCE: Concurrently fetch process list and model configurations
+                # for the top 3 models to reduce deep scan latency per host.
+                ps_task = asyncio.create_task(self.get_process_status_ollama(ip, port, session))
+                info_tasks = [asyncio.create_task(self.get_model_info_ollama(ip, port, session, m))
+                              for m in models[:3]]
 
-                for model_name in models[:3]:
-                    config, info_status = await self.get_model_info_ollama(ip, port, session, model_name)
+                # Wait for all deep scan metadata probes to complete
+                ps_result, *info_results = await asyncio.gather(ps_task, *info_tasks)
+
+                process_list, ps_status = ps_result
+                for i, (config, info_status) in enumerate(info_results):
                     if config:
                         model_configs.append({
-                            "model_name": model_name,
+                            "model_name": models[i],
                             "config": config
                         })
 
@@ -733,10 +740,11 @@ class OllamaScanner:
         completed = 0
         successes = 0
 
-        # FIX 1: Connector limits tuned to match concurrency, preventing pool exhaustion
-        # Set to 2x max_concurrent to accommodate parallel endpoint probing
+        # PERFORMANCE: Connector limits tuned to match concurrency, preventing pool exhaustion
+        # Set to 4x max_concurrent to accommodate parallel endpoint probing (3 types)
+        # plus additional deep scan metadata requests.
         connector = aiohttp.TCPConnector(
-            limit=self.max_concurrent * 2,
+            limit=self.max_concurrent * 4,
             limit_per_host=20,
             ttl_dns_cache=300 if self.enable_dns_cache else None
         )
