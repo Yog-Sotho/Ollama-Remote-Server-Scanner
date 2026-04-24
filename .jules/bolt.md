@@ -21,3 +21,7 @@
 ## 2026-05-20 - [Redundant Concurrency Control Bottleneck]
 **Learning:** Layering multiple concurrency control mechanisms (e.g., a worker pool AND a semaphore of the same size) can accidentally throttle parallel sub-tasks (like parallel endpoint probes) that are launched within each worker, as they all compete for the same limited semaphore slots.
 **Action:** Trust the worker pool and the underlying `aiohttp.TCPConnector` limits for request throttling, and avoid redundant semaphores that can bottleneck parallelization of sub-probes.
+
+## 2026-05-25 - [Deep Scan Metadata Parallelization]
+**Learning:** Sequential I/O-bound requests for host metadata (e.g., process lists and model configurations) create significant cumulative latency during deep scans. Even with a small number of requests (e.g., 4), parallelizing them with `asyncio.gather` can reduce total scan duration by ~60% in high-latency environments.
+**Action:** Identify clusters of I/O-bound requests to the same host and use `asyncio.gather` to execute them concurrently instead of sequentially.

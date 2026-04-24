@@ -616,13 +616,21 @@ class OllamaScanner:
             model_configs = []
 
             if deep_scan and models is not None and len(models) > 0 and server_type == ServerType.OLLAMA:
-                process_list, ps_status = await self.get_process_status_ollama(ip, port, session)
+                # PERFORMANCE: Parallelize metadata retrieval for Ollama servers
+                # We fetch process status and top 3 model configs concurrently to reduce latency
+                target_models = models[:3]
+                tasks = [self.get_process_status_ollama(ip, port, session)]
+                tasks.extend([self.get_model_info_ollama(ip, port, session, m) for m in target_models])
 
-                for model_name in models[:3]:
-                    config, info_status = await self.get_model_info_ollama(ip, port, session, model_name)
+                results = await asyncio.gather(*tasks)
+
+                # Process results: results[0] is process list, results[1:] are model configs
+                process_list = results[0][0] if results[0] else []
+                for i, res in enumerate(results[1:]):
+                    config, status = res
                     if config:
                         model_configs.append({
-                            "model_name": model_name,
+                            "model_name": target_models[i],
                             "config": config
                         })
 
