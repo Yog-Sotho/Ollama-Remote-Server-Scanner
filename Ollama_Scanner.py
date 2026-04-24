@@ -78,7 +78,9 @@ class ScanResult:
 # Regex to match ANSI escape sequences (compiled once at module level for performance)
 ANSI_ESCAPE = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
 # Regex to match C0 and C1 control characters (excluding \n and \t)
-NON_PRINTABLE = re.compile(r'[\x00-\x08\x0b-\x1f\x7f-\x9f]')
+# Also includes Unicode bi-directional control characters (\u202A-\u202E, \u2066-\u2069)
+# to prevent "Trojan Source" terminal spoofing attacks.
+NON_PRINTABLE = re.compile(r'[\x00-\x08\x0b-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]')
 
 
 def safe_display(text: str, max_len: int = 48) -> str:
@@ -452,12 +454,12 @@ class OllamaScanner:
             # Ollama probe
             (f"{base_url}/api/tags", ServerType.OLLAMA,
              lambda d: [sanitize_text(m.get('name', 'unknown') if isinstance(m, dict) else 'invalid_item', max_len=256)
-                        for m in d.get('models', [])[:50]] if isinstance(d, dict) else None),
+                        for m in (d.get('models') or [])[:50]] if isinstance(d, dict) else None),
             # LM Studio probe
             (f"{base_url}/v1/models", ServerType.LM_STUDIO,
              lambda d: [sanitize_text(m.get('id', m.get('name', 'unknown')) if isinstance(m, dict) else 'invalid_item',
                                      max_len=256)
-                        for m in d.get('data', [])[:50]] if isinstance(d, dict) else None),
+                        for m in (d.get('data') or [])[:50]] if isinstance(d, dict) else None),
             # TextGen WebUI probe
             (f"{base_url}/api/info", ServerType.TEXTGEN_WEBUI,
              lambda d: [sanitize_text(d.get('loading_model', d.get('model_name', 'unknown')), max_len=256)]
@@ -515,7 +517,7 @@ class OllamaScanner:
                             if not isinstance(data, dict):
                                 return ([], ScanStatus.INVALID_RESPONSE)
                             # Security: Cap processes to 50 to prevent DoS
-                            processes = data.get('models', [])[:50]
+                            processes = (data.get('models') or [])[:50]
                             # Sanitize process names to prevent terminal injection
                             for proc in processes:
                                 if isinstance(proc, dict) and 'name' in proc:
@@ -653,6 +655,21 @@ class OllamaScanner:
                     if config:
                         model_configs.append({
                             "model_name": models[i],
+                # PERFORMANCE: Parallelize metadata retrieval for Ollama servers
+                # We fetch process status and top 3 model configs concurrently to reduce latency
+                target_models = models[:3]
+                tasks = [self.get_process_status_ollama(ip, port, session)]
+                tasks.extend([self.get_model_info_ollama(ip, port, session, m) for m in target_models])
+
+                results = await asyncio.gather(*tasks)
+
+                # Process results: results[0] is process list, results[1:] are model configs
+                process_list = results[0][0] if results[0] else []
+                for i, res in enumerate(results[1:]):
+                    config, status = res
+                    if config:
+                        model_configs.append({
+                            "model_name": target_models[i],
                             "config": config
                         })
 

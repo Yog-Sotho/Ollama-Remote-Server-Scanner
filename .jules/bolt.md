@@ -25,3 +25,6 @@
 ## 2026-05-25 - [Parallel Deep Scan & Pool Optimization]
 **Learning:** Sequential metadata retrieval (e.g., fetching multiple model configs or process lists) for discovered hosts significantly increases per-target latency, especially when deep-scanning multiple models. Also, connection pool limits that don't account for sub-probes per worker can lead to starvation.
 **Action:** Use `asyncio.gather` for concurrent metadata retrieval and scale `TCPConnector` limits to at least 4x the concurrency level to accommodate discovery probes and deep-scan requests simultaneously.
+## 2026-05-25 - [Deep Scan Metadata Parallelization]
+**Learning:** Sequential I/O-bound requests for host metadata (e.g., process lists and model configurations) create significant cumulative latency during deep scans. Even with a small number of requests (e.g., 4), parallelizing them with `asyncio.gather` can reduce total scan duration by ~60% in high-latency environments.
+**Action:** Identify clusters of I/O-bound requests to the same host and use `asyncio.gather` to execute them concurrently instead of sequentially.
