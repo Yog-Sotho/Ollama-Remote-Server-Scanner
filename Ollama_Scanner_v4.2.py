@@ -78,7 +78,8 @@ class ScanResult:
 # Regex to match ANSI escape sequences (compiled once at module level for performance)
 ANSI_ESCAPE = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
 # Regex to match C0 and C1 control characters (excluding \n and \t)
-NON_PRINTABLE = re.compile(r'[\x00-\x08\x0b-\x1f\x7f-\x9f]')
+# Also includes Unicode BiDi control characters to prevent Trojan Source attacks
+NON_PRINTABLE = re.compile('[\x00-\x08\x0b-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]')
 
 
 def safe_display(text: str, max_len: int = 48) -> str:
@@ -437,14 +438,14 @@ class OllamaScanner:
             self._probe_endpoint(
                 session, f"{base_url}/api/tags", ServerType.OLLAMA,
                 lambda d: [sanitize_text(m.get('name', 'unknown') if isinstance(m, dict) else 'invalid_item', max_len=256)
-                           for m in d.get('models', [])[:50]] if isinstance(d, dict) else None
+                           for m in (d.get('models') or [])[:50]] if isinstance(d, dict) else None
             ),
             # LM Studio probe
             self._probe_endpoint(
                 session, f"{base_url}/v1/models", ServerType.LM_STUDIO,
                 lambda d: [sanitize_text(m.get('id', m.get('name', 'unknown')) if isinstance(m, dict) else 'invalid_item',
                                          max_len=256)
-                           for m in d.get('data', [])[:50]] if isinstance(d, dict) else None
+                           for m in (d.get('data') or [])[:50]] if isinstance(d, dict) else None
             ),
             # TextGen WebUI probe
             self._probe_endpoint(
@@ -502,7 +503,7 @@ class OllamaScanner:
                             if not isinstance(data, dict):
                                 return ([], ScanStatus.INVALID_RESPONSE)
                             # Security: Cap processes to 50 to prevent DoS
-                            processes = data.get('models', [])[:50]
+                            processes = (data.get('models') or [])[:50]
                             # Sanitize process names to prevent terminal injection
                             for proc in processes:
                                 if isinstance(proc, dict) and 'name' in proc:
