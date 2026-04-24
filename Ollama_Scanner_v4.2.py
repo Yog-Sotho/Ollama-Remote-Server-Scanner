@@ -78,7 +78,9 @@ class ScanResult:
 # Regex to match ANSI escape sequences (compiled once at module level for performance)
 ANSI_ESCAPE = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
 # Regex to match C0 and C1 control characters (excluding \n and \t)
-NON_PRINTABLE = re.compile(r'[\x00-\x08\x0b-\x1f\x7f-\x9f]')
+# Also includes Unicode bi-directional control characters (\u202A-\u202E, \u2066-\u2069)
+# to prevent "Trojan Source" terminal spoofing attacks.
+NON_PRINTABLE = re.compile(r'[\x00-\x08\x0b-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]')
 
 
 def safe_display(text: str, max_len: int = 48) -> str:
@@ -347,6 +349,16 @@ class OllamaScanner:
         self.port_timeout = port_timeout if port_timeout is not None else timeout / 2
         # FIX 4.1: Removed unused dns_cache dictionary (TTL handled by TCPConnector)
         self.stats: Dict[str, int] = defaultdict(int)
+        self._init_stats()
+
+    def _init_stats(self):
+        """Initialize all stat keys for deterministic reporting"""
+        for key in ['successful_queries', 'timeout', 'connection_error', 'scan_errors', 'undetected',
+                    'process_status_success', 'model_info_success', 'port_closed']:
+            self.stats[key] = 0
+        for srv in ServerType:
+            if srv != ServerType.UNKNOWN:
+                self.stats[f"{srv.value}_count"] = 0
 
     async def check_port(self, ip: str, port: int) -> Tuple[bool, ScanStatus]:
         """
@@ -437,14 +449,14 @@ class OllamaScanner:
             self._probe_endpoint(
                 session, f"{base_url}/api/tags", ServerType.OLLAMA,
                 lambda d: [sanitize_text(m.get('name', 'unknown') if isinstance(m, dict) else 'invalid_item', max_len=256)
-                           for m in d.get('models', [])[:50]] if isinstance(d, dict) else None
+                           for m in (d.get('models') or [])[:50]] if isinstance(d, dict) else None
             ),
             # LM Studio probe
             self._probe_endpoint(
                 session, f"{base_url}/v1/models", ServerType.LM_STUDIO,
                 lambda d: [sanitize_text(m.get('id', m.get('name', 'unknown')) if isinstance(m, dict) else 'invalid_item',
                                          max_len=256)
-                           for m in d.get('data', [])[:50]] if isinstance(d, dict) else None
+                           for m in (d.get('data') or [])[:50]] if isinstance(d, dict) else None
             ),
             # TextGen WebUI probe
             self._probe_endpoint(
@@ -474,6 +486,7 @@ class OllamaScanner:
                 except Exception:
                     continue
 
+        self.stats["undetected"] += 1
         return (ServerType.UNKNOWN, [], ScanStatus.UNDETECTED)
 
     async def get_process_status_ollama(
@@ -502,7 +515,7 @@ class OllamaScanner:
                             if not isinstance(data, dict):
                                 return ([], ScanStatus.INVALID_RESPONSE)
                             # Security: Cap processes to 50 to prevent DoS
-                            processes = data.get('models', [])[:50]
+                            processes = (data.get('models') or [])[:50]
                             # Sanitize process names to prevent terminal injection
                             for proc in processes:
                                 if isinstance(proc, dict) and 'name' in proc:
@@ -612,17 +625,42 @@ class OllamaScanner:
 
             server_type, models, model_status = await self.detect_server_type(ip, port, session)
 
+            if server_type == ServerType.UNKNOWN:
+                return None
+
             process_list = []
             model_configs = []
 
             if deep_scan and models is not None and len(models) > 0 and server_type == ServerType.OLLAMA:
-                process_list, ps_status = await self.get_process_status_ollama(ip, port, session)
+                # PERFORMANCE: Concurrently fetch process list and model configurations
+                # for the top 3 models to reduce deep scan latency per host.
+                ps_task = asyncio.create_task(self.get_process_status_ollama(ip, port, session))
+                info_tasks = [asyncio.create_task(self.get_model_info_ollama(ip, port, session, m))
+                              for m in models[:3]]
 
-                for model_name in models[:3]:
-                    config, info_status = await self.get_model_info_ollama(ip, port, session, model_name)
+                # Wait for all deep scan metadata probes to complete
+                ps_result, *info_results = await asyncio.gather(ps_task, *info_tasks)
+
+                process_list, ps_status = ps_result
+                for i, (config, info_status) in enumerate(info_results):
                     if config:
                         model_configs.append({
-                            "model_name": model_name,
+                            "model_name": models[i],
+                # PERFORMANCE: Parallelize metadata retrieval for Ollama servers
+                # We fetch process status and top 3 model configs concurrently to reduce latency
+                target_models = models[:3]
+                tasks = [self.get_process_status_ollama(ip, port, session)]
+                tasks.extend([self.get_model_info_ollama(ip, port, session, m) for m in target_models])
+
+                results = await asyncio.gather(*tasks)
+
+                # Process results: results[0] is process list, results[1:] are model configs
+                process_list = results[0][0] if results[0] else []
+                for i, res in enumerate(results[1:]):
+                    config, status = res
+                    if config:
+                        model_configs.append({
+                            "model_name": target_models[i],
                             "config": config
                         })
 
@@ -734,17 +772,19 @@ class OllamaScanner:
         completed = 0
         successes = 0
 
-        # Performance tuning: Scale connector limits with max_concurrent
-        # Set to 2x max_concurrent to accommodate parallel endpoint probing
+        # PERFORMANCE: Scale connector limits with max_concurrent to prevent pool exhaustion.
+        # Set to 4x max_concurrent to accommodate parallel endpoint probing (3 types)
+        # plus additional deep scan metadata requests.
         connector = aiohttp.TCPConnector(
-            limit=self.max_concurrent * 2,
+            limit=self.max_concurrent * 4,
             limit_per_host=20,
             ttl_dns_cache=300 if self.enable_dns_cache else None
         )
         timeout_obj = aiohttp.ClientTimeout(total=self.timeout, connect=self.timeout / 2)
 
         if HAS_TQDM and show_progress:
-            progress_bar = tqdm.tqdm(total=total_ips, desc="Scanning", unit="IP", file=sys.stdout)
+            # PERFORMANCE: Add mininterval to reduce event-loop overhead during high-throughput scanning
+            progress_bar = tqdm.tqdm(total=total_ips, desc="Scanning", unit="IP", file=sys.stdout, mininterval=0.5)
         else:
             progress_bar = None
 
@@ -857,7 +897,7 @@ class OllamaScanner:
         print(f"  • Port closed:           {self.stats.get('port_closed', 0)}", file=sys.stderr)
         print(f"  • Timeouts:              {self.stats.get('timeout', 0)}", file=sys.stderr)
         print(f"  • Connection errors:     {self.stats.get('connection_error', 0)}", file=sys.stderr)
-        print(f"  • Not detected:          {self.stats.get('not_ollama', 0)}", file=sys.stderr)
+        print(f"  • Undetected/Filtered:   {self.stats.get('undetected', 0)}", file=sys.stderr)
         if deep_scan:
             print(f"  • Process status checks: {self.stats.get('process_status_success', 0)}", file=sys.stderr)
             print(f"  • Model info retrieved:  {self.stats.get('model_info_success', 0)}", file=sys.stderr)

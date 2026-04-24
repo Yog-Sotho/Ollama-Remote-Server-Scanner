@@ -32,3 +32,13 @@
 **Vulnerability:** Malformed or malicious JSON responses from remote servers could return unexpected data types (e.g., lists where strings are expected), causing application crashes (DoS) during data processing or display.
 **Learning:** Even with schema-like keys, the values in untrusted JSON responses must be explicitly type-checked. Downstream operations like string `join()` or regex substitution fail catastrophically if they receive non-string types.
 **Prevention:** Always use `isinstance(data, dict)` when parsing JSON responses and ensure sanitization functions like `sanitize_text` explicitly cast input to `str` before processing. Add defensive checks for nested items within lists returned by remote APIs.
+
+## 2026-05-25 - [Security Enhancement] Robust JSON Null Handling
+**Vulnerability:** A malicious remote server could return a JSON response where expected list keys (like 'models' or 'data') are present but set to `null` instead of an empty list, causing a `TypeError` and application crash in Python.
+**Learning:** Python's `dict.get(key, default)` only returns the default if the key is *missing*. If the key exists with a `None` value, it returns `None`. Slicing or iterating over `None` leads to immediate crashes.
+**Prevention:** Use the `(data.get('key') or [])[:limit]` pattern to ensure a list is always returned regardless of whether the key is missing or set to `null`.
+
+## 2026-05-26 - [Security Enhancement] Bi-directional (Bidi) Character Stripping
+**Vulnerability:** Malicious remote data could contain Unicode bi-directional control characters (e.g., RLO - Right-to-Left Override) to visually spoof terminal output, misleading users about the nature of discovered servers or model names.
+**Learning:** Standard non-printable character filters (\x00-\x1f) often miss Unicode-specific layout control characters that can be used for "Trojan Source" style spoofing in modern terminal emulators.
+**Prevention:** Extend the `sanitize_text` regex to explicitly include Unicode bidi control characters (`\u202A-\u202E` and `\u2066-\u2069`) to ensure consistent and safe visual representation of untrusted data.
