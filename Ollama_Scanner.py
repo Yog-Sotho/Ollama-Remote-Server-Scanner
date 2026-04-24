@@ -15,7 +15,7 @@ import json
 import re
 import sys
 import os
-from typing import List, Tuple, Optional, Dict, Iterator, AsyncIterator
+from typing import List, Tuple, Optional, Dict, Iterator
 from ipaddress import IPv4Network, IPv4Address, AddressValueError, IPv6Network, IPv6Address
 import aiohttp
 import time
@@ -458,6 +458,8 @@ class OllamaScanner:
             # LM Studio probe
             (f"{base_url}/v1/models", ServerType.LM_STUDIO,
              lambda d: [sanitize_text(m.get('id', m.get('name', 'unknown')) if isinstance(m, dict) else 'invalid_item',
+                                      max_len=256)
+                        for m in d.get('data', [])[:50]] if isinstance(d, dict) else None),
                                      max_len=256)
                         for m in (d.get('data') or [])[:50]] if isinstance(d, dict) else None),
             # TextGen WebUI probe
@@ -647,6 +649,14 @@ class OllamaScanner:
                 info_tasks = [asyncio.create_task(self.get_model_info_ollama(ip, port, session, m))
                               for m in models[:3]]
 
+                # Bolt Optimization: Parallelize model metadata retrieval for the top 3 models
+                metadata_tasks = [
+                    self.get_model_info_ollama(ip, port, session, model_name)
+                    for model_name in models[:3]
+                ]
+                metadata_results = await asyncio.gather(*metadata_tasks)
+
+                for model_name, (config, info_status) in zip(models[:3], metadata_results):
                 # Wait for all deep scan metadata probes to complete
                 ps_result, *info_results = await asyncio.gather(ps_task, *info_tasks)
 
@@ -692,23 +702,6 @@ class OllamaScanner:
             logger.debug(f"Unexpected error scanning {ip}:{port}: {e}")
             self.stats["scan_errors"] += 1
             return None
-
-    async def _batch_iterator(
-        self,
-        ip_iterator: Iterator[Tuple[str, str]],
-        batch_size: int = 1000
-    ) -> AsyncIterator[List[Tuple[str, str]]]:
-        """
-        Yield batches of IPs from the iterator
-        """
-        batch: List[Tuple[str, str]] = []
-        for ip_item in ip_iterator:
-            batch.append(ip_item)
-            if len(batch) >= batch_size:
-                yield batch
-                batch = []
-        if batch:
-            yield batch
 
     def _count_ips_without_exhausting(self, input_source: str, is_file: bool = False) -> int:
         """
@@ -772,6 +765,77 @@ class OllamaScanner:
             # FIX TQDM: disable auto-refresh during heavy I/O to prevent event-loop blocking
             progress_bar = tqdm.tqdm(total=total_ips, desc="Scanning", unit="IP", file=sys.stdout, mininterval=0.5)
 
+        # Optimized worker-pool model to eliminate head-of-line blocking
+        queue = asyncio.Queue(maxsize=self.max_concurrent * 2)
+
+        async def worker():
+            nonlocal completed, successes
+            while True:
+                try:
+                    item = await queue.get()
+                    if item is None:
+                        queue.task_done()
+                        break
+
+                    ip, version = item
+                    result = await self.scan_single_ip(ip, version, port, session, deep_scan)
+                    completed += 1
+
+                    if result:
+                        successes += 1
+                        if result.is_accessible and result.models:
+                            # list.append is atomic in asyncio single-threaded event loop
+                            results.append(result)
+
+                            # Bolt Optimization: Consistent logging via tqdm.write to avoid corruption
+                            if HAS_TQDM and show_progress:
+                                tqdm.tqdm.write(f"\n✅ {result.server_type.value.upper()} Server: {result.url}")
+                                m_list = ', '.join(result.models[:5])
+                                m_suffix = '...' if len(result.models) > 5 else ''
+                                tqdm.tqdm.write(f"   Models ({len(result.models)}): {m_list}{m_suffix}")
+
+                                if deep_scan and result.process_list:
+                                    tqdm.tqdm.write(f"   🔄 Loaded: {len(result.process_list)} model(s) in RAM/VRAM")
+                            else:
+                                print(f"\n✅ {result.server_type.value.upper()} Server: {result.url}", flush=True)
+                                m_list = ', '.join(result.models[:5])
+                                m_suffix = '...' if len(result.models) > 5 else ''
+                                print(f"   Models ({len(result.models)}): {m_list}{m_suffix}", flush=True)
+
+                                if deep_scan and result.process_list:
+                                    print(f"   🔄 Loaded: {len(result.process_list)} model(s) in RAM/VRAM",
+                                          flush=True)
+
+                        elif result.is_accessible:
+                            results.append(result)
+                            if HAS_TQDM and show_progress:
+                                tqdm.tqdm.write(f"✓ Open port at {result.url} - No models returned")
+                            else:
+                                print(f"✓ Open port at {result.url} - No models returned", flush=True)
+                        else:
+                            if HAS_TQDM and show_progress:
+                                tqdm.tqdm.write(f"❌ Invalid server at {result.url}")
+                            else:
+                                print(f"❌ Invalid server at {result.url}", flush=True)
+
+                    if progress_bar:
+                        progress_bar.update(1)
+                    elif show_progress and (completed % 50 == 0 or completed == total_ips):
+                        elapsed = time.time() - start_time
+                        rate = completed / elapsed if elapsed > 0 else 0
+                        percent = (completed / total_ips) * 100 if total_ips > 0 else 0
+                        msg = (f"\r📈 Progress: {completed}/{total_ips} ({percent:.1f}%) | "
+                               f"Rate: {rate:.1f} IPs/sec | Successes: {successes}")
+                        print(msg, end='', flush=True, file=sys.stderr)
+
+                    queue.task_done()
+                except asyncio.CancelledError:
+                    queue.task_done()
+                    break
+                except Exception as e:
+                    logger.error(f"Error in worker: {e}")
+                    queue.task_done()
+
         async with aiohttp.ClientSession(
             timeout=timeout_obj,
             connector=connector,
@@ -779,79 +843,27 @@ class OllamaScanner:
         ) as session:
             ip_iterator = parse_ip_from_input(input_source, is_file=is_file)
 
-            async for batch in self._batch_iterator(ip_iterator, batch_size=batch_size):
-                tasks = [
-                    asyncio.create_task(self.scan_single_ip(ip, version, port, session, deep_scan))
-                    for ip, version in batch
-                ]
+            # Create worker tasks
+            workers = [asyncio.create_task(worker()) for _ in range(self.max_concurrent)]
 
-                # FIX STABILITY: Use as_completed but handle exceptions safely
-                for coro in asyncio.as_completed(tasks):
-                    try:
-                        result = await coro
-                        completed += 1
+            # Producer: Populate the queue
+            try:
+                for ip_item in ip_iterator:
+                    await queue.put(ip_item)
 
-                        if result:
-                            successes += 1
-                            if result.is_accessible and result.models:
-                                # list.append is atomic in asyncio single-threaded event loop
-                                results.append(result)
+                # Add termination signals for workers
+                for _ in range(self.max_concurrent):
+                    await queue.put(None)
 
-                                # FIX TQDM: Use tqdm.tqdm.write() safely
-                                if HAS_TQDM and show_progress:
-                                    tqdm.tqdm.write(f"\n✅ {result.server_type.value.upper()} Server: {result.url}")
-                                    m_list = ', '.join(result.models[:5])
-                                    m_suffix = '...' if len(result.models) > 5 else ''
-                                    tqdm.tqdm.write(f"   Models ({len(result.models)}): {m_list}{m_suffix}")
-
-                                    if deep_scan and result.process_list:
-                                        tqdm.tqdm.write(f"   🔄 Loaded: {len(result.process_list)} model(s) in RAM/VRAM")
-                                else:
-                                    print(f"\n✅ {result.server_type.value.upper()} Server: {result.url}", flush=True)
-                                    m_list = ', '.join(result.models[:5])
-                                    m_suffix = '...' if len(result.models) > 5 else ''
-                                    print(f"   Models ({len(result.models)}): {m_list}{m_suffix}", flush=True)
-
-                                    if deep_scan and result.process_list:
-                                        print(f"   🔄 Loaded: {len(result.process_list)} model(s) in RAM/VRAM",
-                                              flush=True)
-
-                            elif result.is_accessible:
-                                # list.append is atomic in asyncio single-threaded event loop
-                                results.append(result)
-                                if HAS_TQDM and show_progress:
-                                    tqdm.tqdm.write(f"✓ Open port at {result.url} - No models returned")
-                                else:
-                                    print(f"✓ Open port at {result.url} - No models returned", flush=True)
-                            else:
-                                if HAS_TQDM and show_progress:
-                                    tqdm.tqdm.write(f"❌ Invalid server at {result.url}")
-                                else:
-                                    print(f"❌ Invalid server at {result.url}", flush=True)
-
-                        if progress_bar:
-                            progress_bar.update(1)
-                        elif show_progress and (completed % 50 == 0 or completed == total_ips):
-                            elapsed = time.time() - start_time
-                            rate = completed / elapsed if elapsed > 0 else 0
-                            percent = (completed / total_ips) * 100 if total_ips > 0 else 0
-                            msg = (f"\r📈 Progress: {completed}/{total_ips} ({percent:.1f}%) | "
-                                   f"Rate: {rate:.1f} IPs/sec | Successes: {successes}")
-                            print(msg, end='', flush=True, file=sys.stderr)
-
-                    except asyncio.CancelledError:
-                        # Cancel remaining tasks on interruption
-                        for t in tasks:
-                            if not t.done():
-                                t.cancel()
-                        raise
-
-                    except Exception as e:
-                        logger.error(f"Error processing task: {e}")
-                        continue
-
-                # FIX FREEZING: Yield control to event loop between batches to prevent starvation
-                await asyncio.sleep(0)
+                # Wait for all workers to complete
+                await asyncio.gather(*workers)
+            except (asyncio.CancelledError, Exception):
+                # Ensure all workers are cancelled if producer fails or is interrupted
+                for w in workers:
+                    if not w.done():
+                        w.cancel()
+                await asyncio.gather(*workers, return_exceptions=True)
+                raise
 
         if progress_bar:
             progress_bar.close()
