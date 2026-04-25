@@ -77,12 +77,11 @@ class ScanResult:
 
 # Regex to match ANSI escape sequences (compiled once at module level for performance)
 ANSI_ESCAPE = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
-# Regex to match all C0 and C1 control characters (including \n and \t)
-NON_PRINTABLE = re.compile(r'[\x00-\x1f\x7f-\x9f]')
 # Regex to match C0 and C1 control characters (excluding \n and \t)
 # Also includes Unicode bi-directional control characters (\u202A-\u202E, \u2066-\u2069)
-# to prevent "Trojan Source" terminal spoofing attacks.
-NON_PRINTABLE = re.compile(r'[\x00-\x08\x0b-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]')
+# to prevent terminal injection and "Trojan Source" spoofing attacks.
+# Use non-raw string to ensure Unicode escapes are correctly interpreted.
+NON_PRINTABLE = re.compile("[\x00-\x08\x0b-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]")
 
 
 def safe_display(text: str, max_len: int = 48) -> str:
@@ -459,12 +458,8 @@ class OllamaScanner:
                         for m in (d.get('models') or [])[:50]] if isinstance(d, dict) else None),
             # LM Studio probe
             (f"{base_url}/v1/models", ServerType.LM_STUDIO,
-             lambda d: [sanitize_text(m.get('id', m.get('name', 'unknown')) if isinstance(m, dict)
-                                      else 'invalid_item', max_len=256)
              lambda d: [sanitize_text(m.get('id', m.get('name', 'unknown')) if isinstance(m, dict) else 'invalid_item',
                                       max_len=256)
-                        for m in d.get('data', [])[:50]] if isinstance(d, dict) else None),
-                                     max_len=256)
                         for m in (d.get('data') or [])[:50]] if isinstance(d, dict) else None),
             # TextGen WebUI probe
             (f"{base_url}/api/info", ServerType.TEXTGEN_WEBUI,
@@ -647,28 +642,6 @@ class OllamaScanner:
             model_configs = []
 
             if deep_scan and models and server_type == ServerType.OLLAMA:
-                # PERFORMANCE: Concurrently fetch process list and model configurations
-                # for the top 3 models to reduce deep scan latency per host.
-                ps_task = asyncio.create_task(self.get_process_status_ollama(ip, port, session))
-                info_tasks = [asyncio.create_task(self.get_model_info_ollama(ip, port, session, m))
-                              for m in models[:3]]
-
-                # Bolt Optimization: Parallelize model metadata retrieval for the top 3 models
-                metadata_tasks = [
-                    self.get_model_info_ollama(ip, port, session, model_name)
-                    for model_name in models[:3]
-                ]
-                metadata_results = await asyncio.gather(*metadata_tasks)
-
-                for model_name, (config, info_status) in zip(models[:3], metadata_results):
-                # Wait for all deep scan metadata probes to complete
-                ps_result, *info_results = await asyncio.gather(ps_task, *info_tasks)
-
-                process_list, ps_status = ps_result
-                for i, (config, info_status) in enumerate(info_results):
-                    if config:
-                        model_configs.append({
-                            "model_name": models[i],
                 # PERFORMANCE: Parallelize metadata retrieval for Ollama servers
                 # We fetch process status and top 3 model configs concurrently to reduce latency
                 target_models = models[:3]
