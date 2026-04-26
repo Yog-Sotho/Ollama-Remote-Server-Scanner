@@ -77,11 +77,11 @@ class ScanResult:
 
 # Regex to match ANSI escape sequences (compiled once at module level for performance)
 ANSI_ESCAPE = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
-# Regex to match C0 and C1 control characters (excluding \n and \t)
+# Regex to match C0 and C1 control characters (including \n and \t)
 # Also includes Unicode bi-directional control characters (\u202A-\u202E, \u2066-\u2069)
 # to prevent terminal injection and "Trojan Source" spoofing attacks.
 # Use non-raw string to ensure Unicode escapes are correctly interpreted.
-NON_PRINTABLE = re.compile("[\x00-\x08\x0b-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]")
+NON_PRINTABLE = re.compile("[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]")
 
 
 def safe_display(text: str, max_len: int = 48) -> str:
