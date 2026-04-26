@@ -111,11 +111,16 @@ def sanitize_text(text: str, max_len: int = 1024) -> str:
     if len(text) > max_len * 2:
         text = text[:max_len * 2]
 
-    # Remove ANSI escape sequences
-    text = ANSI_ESCAPE.sub('', text)
-    # Remove non-printable control characters except common safe whitespace (\n, \t)
-    # This is optimized with a pre-compiled regex for performance (~10x speedup)
-    text = NON_PRINTABLE.sub('', text)
+    # PERFORMANCE: Fast-path check for clean strings.
+    # The common case is strings with no special characters. We avoid regex sub if not needed.
+    # '\x1b' is the escape character for ANSI.
+    if '\x1b' in text:
+        text = ANSI_ESCAPE.sub('', text)
+
+    # Only run the more expensive control character cleanup if necessary.
+    if NON_PRINTABLE.search(text):
+        text = NON_PRINTABLE.sub('', text)
+
     # Final truncation to exact requested length
     if len(text) > max_len:
         text = text[:max_len]
@@ -449,14 +454,15 @@ class OllamaScanner:
             # Ollama probe
             self._probe_endpoint(
                 session, f"{base_url}/api/tags", ServerType.OLLAMA,
-                lambda d: [sanitize_text(m.get('name', 'unknown') if isinstance(m, dict) else 'invalid_item', max_len=256)
+                lambda d: [sanitize_text(m.get('name', 'unknown') if isinstance(m, dict) else 'invalid_item',
+                                         max_len=256)
                            for m in (d.get('models') or [])[:50]] if isinstance(d, dict) else None
             ),
             # LM Studio probe
             self._probe_endpoint(
                 session, f"{base_url}/v1/models", ServerType.LM_STUDIO,
-                lambda d: [sanitize_text(m.get('id', m.get('name', 'unknown')) if isinstance(m, dict) else 'invalid_item',
-                                         max_len=256)
+                lambda d: [sanitize_text(m.get('id', m.get('name', 'unknown')) if isinstance(m, dict)
+                                         else 'invalid_item', max_len=256)
                            for m in (d.get('data') or [])[:50]] if isinstance(d, dict) else None
             ),
             # TextGen WebUI probe
