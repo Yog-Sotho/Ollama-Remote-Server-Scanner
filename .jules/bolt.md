@@ -28,3 +28,7 @@
 ## 2026-05-25 - [Deep Scan Metadata Parallelization]
 **Learning:** Sequential I/O-bound requests for host metadata (e.g., process lists and model configurations) create significant cumulative latency during deep scans. Even with a small number of requests (e.g., 4), parallelizing them with `asyncio.gather` can reduce total scan duration by ~60% in high-latency environments.
 **Action:** Identify clusters of I/O-bound requests to the same host and use `asyncio.gather` to execute them concurrently instead of sequentially.
+
+## 2026-05-27 - [Regex Fast-Path Optimization]
+**Learning:** Python's `re.sub()` and `re.compile()` overhead can be bypassed for "clean" strings by using simple `in` operator checks or `re.search()` before performing substitutions. This is especially effective in loops processing many small strings.
+**Action:** Implement fast-path checks for common cases (e.g., `if '\x1b' in text`) before calling regex substitution functions to reduce CPU cycles in hot paths.
