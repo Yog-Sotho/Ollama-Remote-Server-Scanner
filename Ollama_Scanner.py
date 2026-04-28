@@ -75,8 +75,10 @@ class ScanResult:
     status: ScanStatus
 
 
-# Regex to match ANSI escape sequences (compiled once at module level for performance)
-ANSI_ESCAPE = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+# Regex to match ANSI escape sequences (compiled once at module level for performance).
+# Optimized to include CSI, OSC, and other FE-range control sequences to prevent
+# terminal spoofing and title hijacking attacks.
+ANSI_ESCAPE = re.compile(r'\x1B(?:\[[0-?]*[ -/]*[@-~]|\][0-9]*;[\s\S]*?(?:\x07|\x1B\\)|[@-_])')
 # Regex to match C0 and C1 control characters (including \n and \t)
 # Also includes Unicode bi-directional control characters (\u202A-\u202E, \u2066-\u2069)
 # to prevent terminal injection and "Trojan Source" spoofing attacks.
@@ -113,7 +115,8 @@ def sanitize_text(text: str, max_len: int = 1024) -> str:
 
     # Remove ANSI escape sequences
     text = ANSI_ESCAPE.sub('', text)
-    # Remove non-printable control characters except common safe whitespace (\n, \t)
+    # Remove non-printable control characters including \n and \t to prevent
+    # multi-line spoofing attacks in CLI output.
     # This is optimized with a pre-compiled regex for performance (~10x speedup)
     text = NON_PRINTABLE.sub('', text)
     # Final truncation to exact requested length

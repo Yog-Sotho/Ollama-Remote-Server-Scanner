@@ -51,3 +51,8 @@
 **Vulnerability:** Malicious remote data could contain Unicode bi-directional control characters (e.g., RLO - Right-to-Left Override) to visually spoof terminal output, misleading users about the nature of discovered servers or model names.
 **Learning:** Standard non-printable character filters (\x00-\x1f) often miss Unicode-specific layout control characters that can be used for "Trojan Source" style spoofing in modern terminal emulators.
 **Prevention:** Extend the `sanitize_text` regex to explicitly include Unicode bidi control characters (`\u202A-\u202E` and `\u2066-\u2069`) to ensure consistent and safe visual representation of untrusted data.
+
+## 2026-05-27 - [Security Enhancement] Comprehensive Terminal Injection Protection
+**Vulnerability:** Incomplete ANSI escape sequence filtering. The previous regex only caught CSI sequences, leaving the terminal vulnerable to OSC (Operating System Command) sequences which can be used for title hijacking and other spoofing attacks.
+**Learning:** CLI tools displaying untrusted remote data must use robust sanitization that accounts for the full range of terminal control sequences (CSI, OSC, and FE range).
+**Prevention:** Use a comprehensive ANSI regex r'\x1B(?:\[[0-?]*[ -/]*[@-~]|\][0-9]*;[\s\S]*?(?:\x07|\x1B\\)|[@-_])' and ensure all multi-line characters are stripped to maintain CLI output integrity.
