@@ -451,7 +451,8 @@ class OllamaScanner:
                 session, f"{base_url}/api/tags", ServerType.OLLAMA,
                 lambda d: [sanitize_text(m.get('name', 'unknown') if isinstance(m, dict) else 'invalid_item',
                                          max_len=256)
-                           for m in (d.get('models') or [])[:50]] if isinstance(d, dict) else None
+                           for m in d.get('models')[:50]]
+                if isinstance(d, dict) and isinstance(d.get('models'), list) else None
             ),
             # LM Studio probe
             self._probe_endpoint(
@@ -459,7 +460,8 @@ class OllamaScanner:
                 lambda d: [sanitize_text(
                     m.get('id', m.get('name', 'unknown')) if isinstance(m, dict) else 'invalid_item',
                     max_len=256)
-                    for m in (d.get('data') or [])[:50]] if isinstance(d, dict) else None
+                    for m in d.get('data')[:50]]
+                if isinstance(d, dict) and isinstance(d.get('data'), list) else None
             ),
             # TextGen WebUI probe
             self._probe_endpoint(
@@ -518,11 +520,16 @@ class OllamaScanner:
                             if not isinstance(data, dict):
                                 return ([], ScanStatus.INVALID_RESPONSE)
                             # Security: Cap processes to 50 to prevent DoS
-                            processes = (data.get('models') or [])[:50]
+                            raw_models = data.get('models')
+                            processes = raw_models[:50] if isinstance(raw_models, list) else []
                             # Sanitize process names to prevent terminal injection
                             for proc in processes:
-                                if isinstance(proc, dict) and 'name' in proc:
-                                    proc['name'] = sanitize_text(proc['name'], max_len=256)
+                                if isinstance(proc, dict):
+                                    if 'name' in proc:
+                                        proc['name'] = sanitize_text(proc['name'], max_len=256)
+                                    # Ensure size is always a numeric type (int or float)
+                                    if not isinstance(proc.get('size'), (int, float)):
+                                        proc['size'] = 0
                             self.stats["process_status_success"] += 1
                             return (processes, ScanStatus.SUCCESS)
                         except aiohttp.ContentTypeError:

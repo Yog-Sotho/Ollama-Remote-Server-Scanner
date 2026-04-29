@@ -51,3 +51,8 @@
 **Vulnerability:** Malicious remote data could contain Unicode bi-directional control characters (e.g., RLO - Right-to-Left Override) to visually spoof terminal output, misleading users about the nature of discovered servers or model names.
 **Learning:** Standard non-printable character filters (\x00-\x1f) often miss Unicode-specific layout control characters that can be used for "Trojan Source" style spoofing in modern terminal emulators.
 **Prevention:** Extend the `sanitize_text` regex to explicitly include Unicode bidi control characters (`\u202A-\u202E` and `\u2066-\u2069`) to ensure consistent and safe visual representation of untrusted data.
+
+## 2026-05-27 - [Security Enhancement] Type-Safe JSON Parsing for Hostile Endpoints
+**Vulnerability:** The scanner could crash (DoS) if a scanned target returns a truthy non-list value (e.g., an integer or boolean) for expected list keys (like `models`), causing slicing or iteration to fail with a `TypeError`.
+**Learning:** Defensive patterns like `(data.get('key') or [])` are insufficient if the value exists but is of an unexpected type. Slicing an integer or iterating over a boolean causes immediate crashes.
+**Prevention:** Use explicit `isinstance(data.get('key'), list)` checks before attempting to slice or iterate over expected collection fields in untrusted JSON responses. Additionally, validate that numeric fields (like `size`) are of the expected type before performing arithmetic operations.
