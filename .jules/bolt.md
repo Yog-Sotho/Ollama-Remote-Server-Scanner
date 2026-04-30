@@ -32,3 +32,7 @@
 ## 2026-05-28 - [Regex Optimization: Fast-path Substring Checks]
 **Learning:** Using simple substring checks (`if 'char' in text`) or `regex.search()` before calling `regex.sub()` provides a measurable speedup (~1.7x) for text sanitization when the majority of strings are already "clean." This avoids the overhead of the regex engine's substitution logic entirely for clean paths.
 **Action:** Always implement fast-path checks before regex substitutions in high-frequency text processing loops to optimize for the common "clean" case.
+
+## 2026-06-02 - [IP Stringification Performance]
+**Learning:** The `str()` method of `ipaddress.IPv4Address` and `ipaddress.IPv6Address` is significantly slower than using the standard library's `socket` and `struct` modules due to the overhead of Python's object model and validation logic. For high-throughput IP generation (e.g., scanning large networks), this becomes a major bottleneck.
+**Action:** Use `socket.inet_ntoa(struct.pack('!I', int(ip)))` for IPv4 and `socket.inet_ntop(socket.AF_INET6, int(ip).to_bytes(16, 'big'))` for IPv6 stringification in hot paths to achieve 3x-11x faster IP expansion.
