@@ -77,11 +77,11 @@ class ScanResult:
 
 # Regex to match ANSI escape sequences (compiled once at module level for performance)
 ANSI_ESCAPE = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
-# Regex to match C0 and C1 control characters (EXCLUDING \n and \t for safe whitespace)
+# Regex to match C0 and C1 control characters (INCLUDING \n and \t to prevent spoofing)
 # Also includes Unicode bi-directional control characters (\u202A-\u202E, \u2066-\u2069)
 # to prevent terminal injection and "Trojan Source" spoofing attacks.
 # Use non-raw string to ensure Unicode escapes are correctly interpreted.
-NON_PRINTABLE = re.compile("[\x00-\x08\x0b-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]")
+NON_PRINTABLE = re.compile("[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]")
 
 
 def safe_display(text: str, max_len: int = 48) -> str:
@@ -118,7 +118,7 @@ def sanitize_text(text: str, max_len: int = 1024) -> str:
 
     # Fast-path check for other non-printable characters
     if NON_PRINTABLE.search(text):
-        # Remove non-printable control characters except common safe whitespace (\n, \t)
+        # Remove non-printable control characters including newlines and tabs
         # This is optimized with a pre-compiled regex for performance (~10x speedup)
         text = NON_PRINTABLE.sub('', text)
     # Final truncation to exact requested length
