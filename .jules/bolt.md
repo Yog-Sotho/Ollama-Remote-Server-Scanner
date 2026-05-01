@@ -32,3 +32,7 @@
 ## 2026-05-28 - [Regex Optimization: Fast-path Substring Checks]
 **Learning:** Using simple substring checks (`if 'char' in text`) or `regex.search()` before calling `regex.sub()` provides a measurable speedup (~1.7x) for text sanitization when the majority of strings are already "clean." This avoids the overhead of the regex engine's substitution logic entirely for clean paths.
 **Action:** Always implement fast-path checks before regex substitutions in high-frequency text processing loops to optimize for the common "clean" case.
+
+## 2026-06-05 - [IP Stringification Performance]
+**Learning:** In high-throughput IP generation (e.g. expanding /16 or /112 ranges), `str(ip_obj)` from the `ipaddress` module is significantly slower than using `socket.inet_ntoa` or `socket.inet_ntop`. These standard library functions provide a 2x-10x speedup by utilizing underlying C implementations for byte-to-string conversion.
+**Action:** Use `socket.inet_ntoa(ip.packed)` for IPv4 and `socket.inet_ntop(socket.AF_INET6, ip.packed)` for IPv6 in performance-critical IP iteration loops.
