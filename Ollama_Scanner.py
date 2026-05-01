@@ -15,6 +15,8 @@ import json
 import re
 import sys
 import os
+import socket
+import struct
 from typing import List, Tuple, Optional, Dict, Iterator
 from ipaddress import IPv4Network, IPv4Address, AddressValueError, IPv6Network, IPv6Address
 import aiohttp
@@ -155,8 +157,9 @@ def validate_ip_range_static(ip_range: str) -> Iterator[Tuple[str, str]]:
         # Use built-in is_global which covers all internet-routable addresses
         if network.is_global:
             logger.warning(f"⚠️  Scanning PUBLIC IPv4 range: {ip_display}. Ensure you have permission!")
+        ntoa = socket.inet_ntoa
         for ip in network:
-            yield (str(ip), 'IPv4')
+            yield (ntoa(ip.packed), 'IPv4')
         return
     except ValueError:
         pass
@@ -165,8 +168,10 @@ def validate_ip_range_static(ip_range: str) -> Iterator[Tuple[str, str]]:
         network = IPv6Network(ip_range, strict=False)
         if network.is_global:
             logger.warning(f"⚠️  Scanning PUBLIC IPv6 range: {ip_display}. Ensure you have permission!")
+        ntop = socket.inet_ntop
+        af6 = socket.AF_INET6
         for ip in network:
-            yield (str(ip), 'IPv6')
+            yield (ntop(af6, ip.packed), 'IPv6')
         return
     except ValueError:
         pass
@@ -194,26 +199,29 @@ def validate_ip_range_static(ip_range: str) -> Iterator[Tuple[str, str]]:
             end_int = int(end_ip)
             if start_int > end_int:
                 raise ValueError("Start IP cannot be greater than end IP")
+            ntoa = socket.inet_ntoa
+            pack = struct.pack
             for i in range(start_int, end_int + 1):
-                yield (str(IPv4Address(i)), 'IPv4')
+                # Optimization: Direct integer to string conversion via socket/struct
+                yield (ntoa(pack("!I", i)), 'IPv4')
             return
         else:
             try:
                 end_suffix = int(end_part)
             except ValueError:
                 raise ValueError(f"Invalid end suffix: {safe_display(end_part)}")
-            base_parts = start_ip_str.split('.')
-            start_num = int(base_parts[-1])
-            base = '.'.join(base_parts[:-1])
+            if end_suffix > 255:
+                raise ValueError(f"Invalid end suffix (max 255): {end_suffix}")
+            start_num = int(start_ip_str.split('.')[-1])
             if end_suffix < start_num:
                 raise ValueError("End suffix cannot be less than start suffix")
+
+            # Optimization: Direct integer to string conversion
+            base_int = int(start_ip) & 0xFFFFFF00
+            ntoa = socket.inet_ntoa
+            pack = struct.pack
             for i in range(start_num, end_suffix + 1):
-                ip_candidate = f"{base}.{i}"
-                try:
-                    IPv4Address(ip_candidate)
-                    yield (ip_candidate, 'IPv4')
-                except AddressValueError:
-                    continue
+                yield (ntoa(pack("!I", base_int | i)), 'IPv4')
             return
 
     # Single IP (try IPv4 first)
