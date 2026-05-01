@@ -56,3 +56,8 @@
 **Vulnerability:** The scanner could crash (DoS) if a scanned target returns a truthy non-list value (e.g., an integer or boolean) for expected list keys (like `models`), causing slicing or iteration to fail with a `TypeError`.
 **Learning:** Defensive patterns like `(data.get('key') or [])` are insufficient if the value exists but is of an unexpected type. Slicing an integer or iterating over a boolean causes immediate crashes.
 **Prevention:** Use explicit `isinstance(data.get('key'), list)` checks before attempting to slice or iterate over expected collection fields in untrusted JSON responses. Additionally, validate that numeric fields (like `size`) are of the expected type before performing arithmetic operations.
+
+## 2026-05-28 - [Security Enhancement] Comprehensive Terminal Output Spoofing Protection
+**Vulnerability:** A malicious remote server could return newlines (`\n`) or tabs (`\t`) in model names or metadata, allowing it to inject arbitrary lines into the scanner's CLI output to spoof status messages or hide results.
+**Learning:** Initial non-printable character filters that explicitly exempt `\n` and `\t` for "safe whitespace" create a multi-line injection vector in CLI tools.
+**Prevention:** Include all C0 control characters (`\x00-\x1f`) in the `NON_PRINTABLE` regex. All data fetched from remote endpoints must be strictly sanitized to single-line identifiers to maintain the integrity of the terminal interface.
