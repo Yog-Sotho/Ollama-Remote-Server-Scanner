@@ -78,7 +78,7 @@ class ScanResult:
 
 
 # Regex to match ANSI escape sequences (compiled once at module level for performance)
-ANSI_ESCAPE = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+ANSI_ESCAPE = re.compile(r'\x1B(?:\[[0-?]*[ -/]*[@-~]|\][0-9]*;[\s\S]*?(?:\x07|\x1B\\)|[@-_])')
 # Regex to match C0 and C1 control characters (INCLUDING \n and \t to prevent spoofing)
 # Also includes Unicode bi-directional control characters (\u202A-\u202E, \u2066-\u2069)
 # to prevent terminal injection and "Trojan Source" spoofing attacks.
@@ -1110,7 +1110,7 @@ DISCLAIMER: Only scan networks you own or have explicit permission to test.
     duration = time.time() - scan_start_time
 
     accessible_servers = []
-    print(f"\n{'='*70}", file=sys.stderr)
+    print(f"\n{'=' * 70}", file=sys.stderr)
     print(f"📊 RESULTS SUMMARY - {len(results)} servers discovered", file=sys.stderr)
     print("=" * 70, file=sys.stderr)
 
@@ -1129,7 +1129,7 @@ DISCLAIMER: Only scan networks you own or have explicit permission to test.
                 print("\n   🔄 LOADED IN RAM/VRAM:", flush=True)
                 for proc in result.process_list[:5]:
                     name = proc.get('name', 'unknown')
-                    size_gb = proc.get('size', 0) / (1024**3)
+                    size_gb = proc.get('size', 0) / (1024 ** 3)
                     print(f"      ├─ {name} (~{size_gb:.1f} GB)", flush=True)
                 if len(result.process_list) > 5:
                     print(f"      └─ ... and {len(result.process_list) - 5} more", flush=True)
