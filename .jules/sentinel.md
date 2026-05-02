@@ -61,3 +61,8 @@
 **Vulnerability:** A malicious remote server could return newlines (`\n`) or tabs (`\t`) in model names or metadata, allowing it to inject arbitrary lines into the scanner's CLI output to spoof status messages or hide results.
 **Learning:** Initial non-printable character filters that explicitly exempt `\n` and `\t` for "safe whitespace" create a multi-line injection vector in CLI tools.
 **Prevention:** Include all C0 control characters (`\x00-\x1f`) in the `NON_PRINTABLE` regex. All data fetched from remote endpoints must be strictly sanitized to single-line identifiers to maintain the integrity of the terminal interface.
+
+## 2026-06-05 - [Security Enhancement] Advanced ANSI/OSC Injection Protection
+**Vulnerability:** Insufficient ANSI escape sanitization allowed terminal injection and spoofing via Operating System Command (OSC) sequences, which could be used to manipulate terminal titles or other state.
+**Learning:** Simple ANSI regexes often only cover Control Sequence Introducer (CSI) sequences, missing OSC sequences that can contain arbitrary payloads and different terminators.
+**Prevention:** Use a comprehensive regex like `\x1B(?:\[[0-?]*[ -/]*[@-~]|\][0-9]*;[\s\S]*?(?:\x07|\x1B\\)|[@-_])` that accounts for OSC sequences, including their parameters and terminators like `\x07` (BEL) or `\x1B\\` (ST), as well as other C1 control characters.
