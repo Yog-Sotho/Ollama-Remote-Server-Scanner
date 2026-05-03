@@ -113,6 +113,10 @@ def sanitize_text(text: str, max_len: int = 1024) -> str:
     if len(text) > max_len * 2:
         text = text[:max_len * 2]
 
+    # Bolt Optimization: Fast-path check with isprintable() to skip all regex on clean strings
+    if text.isprintable():
+        return text[:max_len]
+
     # Bolt Optimization: Fast-path checks to avoid regex engine on clean strings (~1.7x speedup)
     if '\x1b' in text:
         # Remove ANSI escape sequences
