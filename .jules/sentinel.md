@@ -66,3 +66,8 @@
 **Vulnerability:** Insufficient ANSI escape sanitization allowed terminal injection and spoofing via Operating System Command (OSC) sequences, which could be used to manipulate terminal titles or other state.
 **Learning:** Simple ANSI regexes often only cover Control Sequence Introducer (CSI) sequences, missing OSC sequences that can contain arbitrary payloads and different terminators.
 **Prevention:** Use a comprehensive regex like `\x1B(?:\[[0-?]*[ -/]*[@-~]|\][0-9]*;[\s\S]*?(?:\x07|\x1B\\)|[@-_])` that accounts for OSC sequences, including their parameters and terminators like `\x07` (BEL) or `\x1B\\` (ST), as well as other C1 control characters.
+
+## 2026-06-10 - [Security Enhancement] Type-Safe Response Parsing for Process Metadata
+**Vulnerability:** Application crash (DoS) when a remote Ollama server returns a list of non-dictionary items for the `/api/ps` endpoint, leading to an `AttributeError` in the display logic.
+**Learning:** Structural validation of JSON responses must extend to the items within a collection. Slicing a list is safe, but downstream operations expecting dictionaries will fail if the list contains primitives or other unexpected types.
+**Prevention:** Use list comprehensions with `isinstance(..., dict)` checks to filter untrusted JSON collections at the point of ingestion, ensuring all downstream consumers receive data of the expected type.
