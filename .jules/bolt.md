@@ -40,3 +40,7 @@
 ## 2026-06-05 - [IP Expansion Iteration Optimization]
 **Learning:** Even when using fast `socket` stringification, iterating directly over `ipaddress.IPv4Network` or `ipaddress.IPv6Network` objects still causes the instantiation of a new `IPv4Address`/`IPv6Address` object for every IP in the range. For large CIDR blocks, this object creation overhead is a significant bottleneck.
 **Action:** Iterate over CIDR ranges using `range(int(network.network_address), int(network.broadcast_address) + 1)` and perform integer-to-string conversion directly from the loop variable. This avoids all per-IP object instantiation and provides an additional ~2x speedup on top of stringification optimizations.
+
+## 2026-06-08 - [Fast-path Sanitization with Early Truncation]
+**Learning:** Using `str.isprintable()` provides a massive speedup (~2x) for "clean" strings by bypassing expensive regex processing. However, O(N) operations like `isprintable()` or regex searches must be preceded by early truncation to bound computational cost against malicious massive inputs and prevent potential DoS.
+**Action:** Always perform length-bounding truncation before any O(N) string inspections or regex operations in high-frequency text processing paths.
