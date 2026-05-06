@@ -532,7 +532,7 @@ class OllamaScanner:
                                 return ([], ScanStatus.INVALID_RESPONSE)
                             # Security: Cap processes to 50 to prevent DoS
                             raw_models = data.get('models')
-                            processes = raw_models[:50] if isinstance(raw_models, list) else []
+                            processes = [m for m in raw_models[:50] if isinstance(m, dict)] if isinstance(raw_models, list) else []
                             # Sanitize process names to prevent terminal injection
                             for proc in processes:
                                 if isinstance(proc, dict):
