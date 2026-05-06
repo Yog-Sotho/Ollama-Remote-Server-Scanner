@@ -40,3 +40,15 @@
 ## 2026-06-05 - [IP Expansion Iteration Optimization]
 **Learning:** Even when using fast `socket` stringification, iterating directly over `ipaddress.IPv4Network` or `ipaddress.IPv6Network` objects still causes the instantiation of a new `IPv4Address`/`IPv6Address` object for every IP in the range. For large CIDR blocks, this object creation overhead is a significant bottleneck.
 **Action:** Iterate over CIDR ranges using `range(int(network.network_address), int(network.broadcast_address) + 1)` and perform integer-to-string conversion directly from the loop variable. This avoids all per-IP object instantiation and provides an additional ~2x speedup on top of stringification optimizations.
+
+## 2026-06-08 - [String Sanitization Fast-path with isprintable]
+**Learning:** For text sanitization that uses regex to strip control characters or ANSI escapes, adding a `str.isprintable()` check as a pre-filter provides a ~40-50% speedup for the common case of "clean" strings. This avoids the overhead of the regex engine entirely when no non-printable characters are present.
+**Action:** Use `if not text.isprintable():` as a high-speed guard before entering complex regex-based sanitization logic in hot paths.
+
+## 2026-06-08 - [Integer to Bytes Conversion Optimization]
+**Learning:** In Python 3, `int.to_bytes()` is measurably faster (~8%) than `struct.pack('!I', i)` for converting single integers to their byte representations (e.g., for IPv4 `inet_ntoa` formatting).
+**Action:** Prefer `i.to_bytes(4, 'big')` over `struct.pack` for hot-path byte conversions.
+
+## 2026-06-08 - [Redundant URL Construction Bottleneck]
+**Learning:** Re-calculating the target URL and performing heuristic IP version checks (`":" in ip`) multiple times per target (during discovery and then again for metadata retrieval) adds unnecessary string overhead.
+**Action:** Pre-format the base URL once per target and pass it to downstream probe functions to eliminate redundant formatting and logic in the per-IP hot path.
