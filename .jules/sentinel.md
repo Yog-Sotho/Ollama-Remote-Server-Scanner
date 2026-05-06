@@ -66,3 +66,8 @@
 **Vulnerability:** Insufficient ANSI escape sanitization allowed terminal injection and spoofing via Operating System Command (OSC) sequences, which could be used to manipulate terminal titles or other state.
 **Learning:** Simple ANSI regexes often only cover Control Sequence Introducer (CSI) sequences, missing OSC sequences that can contain arbitrary payloads and different terminators.
 **Prevention:** Use a comprehensive regex like `\x1B(?:\[[0-?]*[ -/]*[@-~]|\][0-9]*;[\s\S]*?(?:\x07|\x1B\\)|[@-_])` that accounts for OSC sequences, including their parameters and terminators like `\x07` (BEL) or `\x1B\\` (ST), as well as other C1 control characters.
+
+## 2026-06-06 - [Security Enhancement] Defensive Filtering of Untrusted List Items
+**Vulnerability:** Application crash (DoS) in the display logic when processing lists of metadata from remote servers if the list contains non-dictionary items (e.g., strings or nulls).
+**Learning:** Checking the type of the list itself is insufficient if the code assumes all members of the list are of a specific type (e.g., dictionaries) during downstream processing or display.
+**Prevention:** Use list comprehensions with explicit type filters (e.g., `[m for m in items if isinstance(m, dict)]`) when ingesting data from untrusted APIs to ensure only well-formed objects reach the rest of the application.
