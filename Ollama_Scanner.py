@@ -86,17 +86,6 @@ ANSI_ESCAPE = re.compile(r'\x1B(?:\[[0-?]*[ -/]*[@-~]|\][0-9]*;[\s\S]*?(?:\x07|\
 NON_PRINTABLE = re.compile("[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]")
 
 
-def safe_display(text: str, max_len: int = 48) -> str:
-    """
-    Safely truncate string for logging to prevent leaking full secrets.
-    Default max_len of 48 accounts for long IPv6 addresses with ports.
-    """
-    if len(text) <= max_len:
-        return text
-    # Show only the first 8 characters of very long strings to protect potential secrets
-    return f"{text[:8]}...[truncated, len={len(text)}]"
-
-
 def sanitize_text(text: str, max_len: int = 1024) -> str:
     """
     Remove ANSI escape sequences and non-printable control characters
@@ -129,6 +118,21 @@ def sanitize_text(text: str, max_len: int = 1024) -> str:
     if len(text) > max_len:
         text = text[:max_len]
     return text
+
+
+def safe_display(text: str, max_len: int = 48) -> str:
+    """
+    Safely truncate and sanitize string for logging to prevent leaking full secrets
+    and protecting against terminal injection from untrusted input.
+    Default max_len of 48 accounts for long IPv6 addresses with ports.
+    """
+    # Security: Sanitize untrusted input before display to prevent terminal injection
+    text = sanitize_text(text, max_len=max_len * 2)
+
+    if len(text) <= max_len:
+        return text
+    # Show only the first 8 characters of very long strings to protect potential secrets
+    return f"{text[:8]}...[truncated, len={len(text)}]"
 
 
 def format_target_url(ip: str, port: int, is_ipv6: Optional[bool] = None) -> str:

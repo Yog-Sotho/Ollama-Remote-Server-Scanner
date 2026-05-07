@@ -71,3 +71,8 @@
 **Vulnerability:** Application crash (DoS) in the display logic when processing lists of metadata from remote servers if the list contains non-dictionary items (e.g., strings or nulls).
 **Learning:** Checking the type of the list itself is insufficient if the code assumes all members of the list are of a specific type (e.g., dictionaries) during downstream processing or display.
 **Prevention:** Use list comprehensions with explicit type filters (e.g., `[m for m in items if isinstance(m, dict)]`) when ingesting data from untrusted APIs to ensure only well-formed objects reach the rest of the application.
+
+## 2026-06-07 - [Security Enhancement] Terminal Injection Protection for Logged Data
+**Vulnerability:** Untrusted data from input sources (like target IP files or malformed command-line arguments) could contain ANSI escape sequences or control characters (e.g., `\r`), leading to terminal output spoofing when logged via `safe_display`.
+**Learning:** While the scanner sanitized remote API responses, it initially overlooked sanitization for local input data processed for logging. Attackers could use malicious target files to hide scanning activity or spoof success/failure messages in the user's terminal.
+**Prevention:** Integrate the `sanitize_text` function directly into the `safe_display` logging helper. This ensures that all data, whether from remote servers or local input sources, is stripped of dangerous terminal control sequences before being displayed to the user.
