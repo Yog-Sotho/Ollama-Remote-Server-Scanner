@@ -16,7 +16,6 @@ import re
 import sys
 import os
 import socket
-import struct
 from typing import List, Tuple, Optional, Dict, Iterator
 from ipaddress import IPv4Network, IPv4Address, AddressValueError, IPv6Network, IPv6Address
 import aiohttp
@@ -193,14 +192,15 @@ def validate_ip_range_static(ip_range: str) -> Iterator[Tuple[str, str]]:
 
         try:
             start_ip = IPv4Address(start_ip_str)
-            if start_ip.is_global:
-                logger.warning(f"⚠️  Scanning PUBLIC IPv4 range: {ip_display}. Ensure you have permission!")
         except AddressValueError:
             raise ValueError(f"Invalid start IP: {safe_display(start_ip_str)}")
 
         if '.' in end_part:
             try:
                 end_ip = IPv4Address(end_part)
+                # Security: Check if either start or end of range is in public space to warn user
+                if start_ip.is_global or end_ip.is_global:
+                    logger.warning(f"⚠️  Scanning PUBLIC IPv4 range: {ip_display}. Ensure you have permission!")
             except AddressValueError:
                 raise ValueError(f"Invalid end IP: {safe_display(end_part)}")
             start_int = int(start_ip)
@@ -212,6 +212,9 @@ def validate_ip_range_static(ip_range: str) -> Iterator[Tuple[str, str]]:
                 yield (socket.inet_ntoa(i.to_bytes(4, 'big')), 'IPv4')
             return
         else:
+            # Suffix range like 192.168.1.1-10 (only start IP needs checking as it's the same prefix)
+            if start_ip.is_global:
+                logger.warning(f"⚠️  Scanning PUBLIC IPv4 range: {ip_display}. Ensure you have permission!")
             try:
                 end_suffix = int(end_part)
             except ValueError:
