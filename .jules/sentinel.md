@@ -76,3 +76,8 @@
 **Vulnerability:** Untrusted data from input sources (like target IP files or malformed command-line arguments) could contain ANSI escape sequences or control characters (e.g., `\r`), leading to terminal output spoofing when logged via `safe_display`.
 **Learning:** While the scanner sanitized remote API responses, it initially overlooked sanitization for local input data processed for logging. Attackers could use malicious target files to hide scanning activity or spoof success/failure messages in the user's terminal.
 **Prevention:** Integrate the `sanitize_text` function directly into the `safe_display` logging helper. This ensures that all data, whether from remote servers or local input sources, is stripped of dangerous terminal control sequences before being displayed to the user.
+
+## 2026-06-08 - [Security Enhancement] Resource Exhaustion Protection via Response Size Limiting
+**Vulnerability:** Malicious or misconfigured remote servers could return extremely large JSON payloads, leading to memory exhaustion (OOM) and Denial of Service (DoS) during the parsing phase.
+**Learning:** Limiting the number of items in a list (e.g., [:50]) is only effective *after* the payload has been fully loaded into memory. To prevent OOM, the raw response size must be capped at the socket/stream level before parsing.
+**Prevention:** Explicitly limit the amount of data read from remote responses using `await response.content.read(MAX_SIZE)` (e.g., 2MB) before attempting to decode JSON or process the body.

@@ -442,7 +442,9 @@ class OllamaScanner:
                 ) as response:
                     if response.status == 200:
                         try:
-                            data = await response.json()
+                            # Security: Enforce a 2MB limit on response body to prevent memory exhaustion (DoS)
+                            body = await response.content.read(2 * 1024 * 1024)
+                            data = json.loads(body)
                             models = parser_func(data)
                             if models is not None:
                                 return (server_type, models)
@@ -545,7 +547,9 @@ class OllamaScanner:
                 ) as response:
                     if response.status == 200:
                         try:
-                            data = await response.json()
+                            # Security: Enforce a 2MB limit on response body to prevent memory exhaustion (DoS)
+                            body = await response.content.read(2 * 1024 * 1024)
+                            data = json.loads(body)
                             if not isinstance(data, dict):
                                 return ([], ScanStatus.INVALID_RESPONSE)
                             # Security: Cap processes to 50 to prevent DoS
@@ -619,7 +623,9 @@ class OllamaScanner:
                 ) as response:
                     if response.status == 200:
                         try:
-                            data = await response.json()
+                            # Security: Enforce a 2MB limit on response body to prevent memory exhaustion (DoS)
+                            body = await response.content.read(2 * 1024 * 1024)
+                            data = json.loads(body)
                             if not isinstance(data, dict):
                                 return (None, ScanStatus.INVALID_RESPONSE)
                             config = {
