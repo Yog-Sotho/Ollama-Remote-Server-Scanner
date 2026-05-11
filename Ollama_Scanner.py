@@ -108,10 +108,10 @@ def sanitize_text(text: str, max_len: int = 1024) -> str:
             # Remove ANSI escape sequences
             text = ANSI_ESCAPE.sub('', text)
 
-        # Fast-path check for other non-printable characters
-        if NON_PRINTABLE.search(text):
+        # Optimization: Directly call sub if still not printable, avoiding redundant search()
+        # isprintable() is much faster than regex search for the negative case.
+        if not text.isprintable():
             # Remove non-printable control characters including newlines and tabs
-            # This is optimized with a pre-compiled regex for performance (~10x speedup)
             text = NON_PRINTABLE.sub('', text)
     # Final truncation to exact requested length
     if len(text) > max_len:
@@ -153,9 +153,6 @@ def validate_ip_range_static(ip_range: str) -> Iterator[Tuple[str, str]]:
     if not s:
         raise ValueError("Empty IP range provided")
 
-    # Security: Truncate display string to prevent potential leak of full secrets if mis-parsed
-    ip_display = safe_display(ip_range)
-
     # Bolt Optimization: Fast-path for single IP addresses (~35x speedup)
     # If no CIDR slash or range dash is present, treat as single IP to avoid expensive object creation
     if '/' not in s and '-' not in s:
@@ -167,7 +164,7 @@ def validate_ip_range_static(ip_range: str) -> Iterator[Tuple[str, str]]:
             if not (packed[0] == 10 or (packed[0] == 172 and (packed[1] & 0xf0) == 16) or
                     (packed[0] == 192 and packed[1] == 168) or packed[0] == 127):
                 if IPv4Address(s).is_global:
-                    logger.warning(f"⚠️  Scanning PUBLIC IPv4 address: {ip_display}. Ensure you have permission!")
+                    logger.warning(f"⚠️  Scanning PUBLIC IPv4 address: {safe_display(ip_range)}. Ensure you have permission!")
             yield (s, 'IPv4')
             return
         except (socket.error, AddressValueError):
@@ -178,7 +175,7 @@ def validate_ip_range_static(ip_range: str) -> Iterator[Tuple[str, str]]:
             socket.inet_pton(socket.AF_INET6, s)
             # Only use expensive IPv6Address for public warning
             if IPv6Address(s).is_global:
-                logger.warning(f"⚠️  Scanning PUBLIC IPv6 address: {ip_display}. Ensure you have permission!")
+                logger.warning(f"⚠️  Scanning PUBLIC IPv6 address: {safe_display(ip_range)}. Ensure you have permission!")
             yield (s, 'IPv6')
             return
         except (socket.error, AddressValueError):
@@ -189,7 +186,7 @@ def validate_ip_range_static(ip_range: str) -> Iterator[Tuple[str, str]]:
         network = IPv4Network(ip_range, strict=False)
         # Use built-in is_global which covers all internet-routable addresses
         if network.is_global:
-            logger.warning(f"⚠️  Scanning PUBLIC IPv4 range: {ip_display}. Ensure you have permission!")
+            logger.warning(f"⚠️  Scanning PUBLIC IPv4 range: {safe_display(ip_range)}. Ensure you have permission!")
         # Bolt Optimization: Iterating over range of integers is ~2x faster than iterating
         # over the network object, as it avoids instantiating IPv4Address for every IP.
         for i in range(int(network.network_address), int(network.broadcast_address) + 1):
@@ -202,7 +199,7 @@ def validate_ip_range_static(ip_range: str) -> Iterator[Tuple[str, str]]:
     try:
         network = IPv6Network(ip_range, strict=False)
         if network.is_global:
-            logger.warning(f"⚠️  Scanning PUBLIC IPv6 range: {ip_display}. Ensure you have permission!")
+            logger.warning(f"⚠️  Scanning PUBLIC IPv6 range: {safe_display(ip_range)}. Ensure you have permission!")
         # Bolt Optimization: Iterating over range of integers is ~2x faster than iterating
         # over the network object, as it avoids instantiating IPv6Address for every IP.
         for i in range(int(network.network_address), int(network.broadcast_address) + 1):
@@ -216,7 +213,7 @@ def validate_ip_range_static(ip_range: str) -> Iterator[Tuple[str, str]]:
     if '-' in ip_range:
         parts = ip_range.split('-')
         if len(parts) != 2:
-            raise ValueError(f"Invalid range format: {ip_display}")
+            raise ValueError(f"Invalid range format: {safe_display(ip_range)}")
         start_ip_str, end_part = parts[0].strip(), parts[1].strip()
 
         try:
@@ -229,7 +226,7 @@ def validate_ip_range_static(ip_range: str) -> Iterator[Tuple[str, str]]:
                 end_ip = IPv4Address(end_part)
                 # Security: Check if either start or end of range is in public space to warn user
                 if start_ip.is_global or end_ip.is_global:
-                    logger.warning(f"⚠️  Scanning PUBLIC IPv4 range: {ip_display}. Ensure you have permission!")
+                    logger.warning(f"⚠️  Scanning PUBLIC IPv4 range: {safe_display(ip_range)}. Ensure you have permission!")
             except AddressValueError:
                 raise ValueError(f"Invalid end IP: {safe_display(end_part)}")
             start_int = int(start_ip)
@@ -243,7 +240,7 @@ def validate_ip_range_static(ip_range: str) -> Iterator[Tuple[str, str]]:
         else:
             # Suffix range like 192.168.1.1-10 (only start IP needs checking as it's the same prefix)
             if start_ip.is_global:
-                logger.warning(f"⚠️  Scanning PUBLIC IPv4 range: {ip_display}. Ensure you have permission!")
+                logger.warning(f"⚠️  Scanning PUBLIC IPv4 range: {safe_display(ip_range)}. Ensure you have permission!")
             try:
                 end_suffix = int(end_part)
             except ValueError:
@@ -260,7 +257,7 @@ def validate_ip_range_static(ip_range: str) -> Iterator[Tuple[str, str]]:
             return
 
 
-    raise ValueError(f"Invalid IP address or range: {ip_display}")
+    raise ValueError(f"Invalid IP address or range: {safe_display(ip_range)}")
 
 
 def count_ips_in_range_static(ip_range: str) -> int:
@@ -349,16 +346,17 @@ def parse_ip_from_input(input_source: str, is_file: bool = False) -> Iterator[Tu
                 line = line.strip()
                 if not line or line.startswith('#'):
                     continue
-                # Security: Truncate logging to prevent sensitive data leakage
-                line_display = safe_display(line)
                 try:
                     count = 0
                     for ip in validate_ip_range_static(line):
                         yield ip
                         count += 1
-                    logger.debug(f"Line {line_num}: '{line_display}' -> {count} IPs")
+                    # Bolt Optimization: Lazy sanitization for debug logs
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug(f"Line {line_num}: '{safe_display(line)}' -> {count} IPs")
                 except ValueError as e:
-                    logger.warning(f"Skipping invalid line {line_num} ('{line_display}'): {e}")
+                    # Bolt Optimization: Lazy sanitization for warnings
+                    logger.warning(f"Skipping invalid line {line_num} ('{safe_display(line)}'): {e}")
     else:
         # Single range from command line
         yield from validate_ip_range_static(input_source)

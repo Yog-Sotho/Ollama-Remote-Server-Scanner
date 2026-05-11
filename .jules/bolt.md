@@ -60,3 +60,11 @@
 ## 2026-06-15 - [High-Speed IP Validation Fast-Path]
 **Learning:** For target parsing, `socket.inet_aton` is significantly faster (~14x) than `ipaddress.IPv4Address` for simple validation. Furthermore, identifying common private IP ranges (10.x, 172.16.x, 192.168.x, 127.x) via byte-level checks on the packed result (e.g., `packed[0] == 10`) allows skipping expensive `is_global` property checks on `IPv4Address` objects entirely for most internal scans.
 **Action:** Use `socket` module validation and byte-level pre-filters for private IPs in high-frequency IP validation loops to minimize object instantiation overhead.
+
+## 2026-06-20 - [Regex vs Translate for Control Character Removal]
+**Learning:** In Python 3.12.13, pre-compiled `re.sub()` is significantly faster (~10x) than `str.translate()` for removing a sparse set of non-contiguous Unicode control characters (like the NON_PRINTABLE set used here). This contradicts the general rule of thumb that `translate` is faster for character deletion.
+**Action:** Always benchmark regex against `str.translate()` when dealing with specific character sets and Python versions, as the regex engine's performance can vary significantly.
+
+## 2026-06-21 - [Deferred Sanitization in Hot Paths]
+**Learning:** Calling sanitization functions like `safe_display()` on every iteration of a high-throughput loop (e.g., parsing millions of IPs) introduces massive unnecessary overhead, even if the strings are "clean."
+**Action:** Defer expensive string processing and sanitization to only be called within conditional blocks (e.g., `if logger.isEnabledFor(logging.DEBUG):`) or error/warning handlers to keep the hot path as lean as possible.
