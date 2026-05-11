@@ -62,6 +62,11 @@
 **Learning:** Initial non-printable character filters that explicitly exempt `\n` and `\t` for "safe whitespace" create a multi-line injection vector in CLI tools.
 **Prevention:** Include all C0 control characters (`\x00-\x1f`) in the `NON_PRINTABLE` regex. All data fetched from remote endpoints must be strictly sanitized to single-line identifiers to maintain the integrity of the terminal interface.
 
+## 2026-06-09 - [Security Enhancement] Comprehensive Invisible Unicode Character Stripping
+**Vulnerability:** Malicious remote servers could return invisible Unicode characters (like Zero Width Space, Soft Hyphen, or Zero Width Non-Joiner) to visually spoof terminal output or perform "Trojan Source" style attacks, bypassing standard printability filters.
+**Learning:** Many "invisible" Unicode characters are technically not in the C0/C1 control ranges but can still be used for deceptive formatting or hiding malicious content in CLI output.
+**Prevention:** Expand the `NON_PRINTABLE` regex to explicitly include ranges for invisible formatting characters (`\xad`, `\u200b-\u200f`, `\u2060-\u206f`) and the Byte Order Mark (`\ufeff`) to ensure all untrusted data is strictly stripped of non-semantic formatting.
+
 ## 2026-06-05 - [Security Enhancement] Advanced ANSI/OSC Injection Protection
 **Vulnerability:** Insufficient ANSI escape sanitization allowed terminal injection and spoofing via Operating System Command (OSC) sequences, which could be used to manipulate terminal titles or other state.
 **Learning:** Simple ANSI regexes often only cover Control Sequence Introducer (CSI) sequences, missing OSC sequences that can contain arbitrary payloads and different terminators.
