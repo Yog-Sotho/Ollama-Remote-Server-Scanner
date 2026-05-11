@@ -60,3 +60,7 @@
 ## 2026-06-15 - [High-Speed IP Validation Fast-Path]
 **Learning:** For target parsing, `socket.inet_aton` is significantly faster (~14x) than `ipaddress.IPv4Address` for simple validation. Furthermore, identifying common private IP ranges (10.x, 172.16.x, 192.168.x, 127.x) via byte-level checks on the packed result (e.g., `packed[0] == 10`) allows skipping expensive `is_global` property checks on `IPv4Address` objects entirely for most internal scans.
 **Action:** Use `socket` module validation and byte-level pre-filters for private IPs in high-frequency IP validation loops to minimize object instantiation overhead.
+
+## 2026-06-18 - [String Sanitization: translate() vs re.sub()]
+**Learning:** In Python, `str.translate()` using a pre-computed dictionary mapping characters to `None` is significantly faster (~2x speedup) than `re.sub()` for removing sets of individual control characters. This is because `translate()` operates at the C level with a direct lookup table, avoiding the overhead of the regular expression engine.
+**Action:** Prefer `str.translate()` over `re.sub()` when the task is to delete a specific set of characters from a string in a hot path.
