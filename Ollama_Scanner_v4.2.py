@@ -79,10 +79,11 @@ class ScanResult:
 # Regex to match ANSI escape sequences (compiled once at module level for performance)
 ANSI_ESCAPE = re.compile(r'\x1B(?:\[[0-?]*[ -/]*[@-~]|\][0-9]*;[\s\S]*?(?:\x07|\x1B\\)|[@-_])')
 # Regex to match C0 and C1 control characters (INCLUDING \n and \t to prevent spoofing)
-# Also includes Unicode bi-directional control characters (\u202A-\u202E, \u2066-\u2069)
+# Also includes Unicode bi-directional control characters (\u202A-\u202E),
+# invisible characters (\xad, \u200b-\u200f, \u2060-\u206f), and BOM (\ufeff)
 # to prevent terminal injection and "Trojan Source" spoofing attacks.
 # Use non-raw string to ensure Unicode escapes are correctly interpreted.
-NON_PRINTABLE = re.compile("[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]")
+NON_PRINTABLE = re.compile("[\x00-\x1f\x7f-\x9f\xad\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]")
 
 
 def sanitize_text(text: str, max_len: int = 1024) -> str:
