@@ -90,10 +90,14 @@ NON_PRINTABLE = re.compile("[\x00-\x1f\x7f-\x9f\xad\u200b-\u200f\u202a-\u202e\u2
 CONTROL_CHARS_TRANSLATE_TABLE = {i: None for i in range(32)}  # C0 controls
 for i in range(127, 160):
     CONTROL_CHARS_TRANSLATE_TABLE[i] = None  # DEL and C1 controls
+CONTROL_CHARS_TRANSLATE_TABLE[0xad] = None  # Soft hyphen
+for i in range(0x200b, 0x2010):
+    CONTROL_CHARS_TRANSLATE_TABLE[i] = None  # Zero-width spaces and marks
 for i in range(0x202a, 0x202f):
     CONTROL_CHARS_TRANSLATE_TABLE[i] = None  # BiDi controls
-for i in range(0x2066, 0x206a):
-    CONTROL_CHARS_TRANSLATE_TABLE[i] = None  # BiDi controls
+for i in range(0x2060, 0x2070):
+    CONTROL_CHARS_TRANSLATE_TABLE[i] = None  # Invisible separators and isolates
+CONTROL_CHARS_TRANSLATE_TABLE[0xfeff] = None  # BOM
 
 
 def sanitize_text(text: str, max_len: int = 1024) -> str:
