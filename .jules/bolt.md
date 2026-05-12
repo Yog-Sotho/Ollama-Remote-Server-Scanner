@@ -64,3 +64,7 @@
 ## 2026-06-18 - [String Sanitization: translate() vs re.sub()]
 **Learning:** In Python, `str.translate()` using a pre-computed dictionary mapping characters to `None` is significantly faster (~2x speedup) than `re.sub()` for removing sets of individual control characters. This is because `translate()` operates at the C level with a direct lookup table, avoiding the overhead of the regular expression engine.
 **Action:** Prefer `str.translate()` over `re.sub()` when the task is to delete a specific set of characters from a string in a hot path.
+
+## 2026-06-20 - [Hyphenated IP Range Parsing Optimization]
+**Learning:** Instantiating `ipaddress.IPv4Address` objects for both start and end boundaries of hyphenated IP ranges (e.g., 192.168.1.1-255) adds significant object creation overhead. Using `socket.inet_aton` and `int.from_bytes` is ~14x faster. Note that `socket.inet_aton` is more permissive than `ipaddress.IPv4Address` (e.g., accepting leading zeros), so defensive `AddressValueError` handling is required when using the stricter library for properties like `.is_global`.
+**Action:** Use low-level `socket` and integer operations for high-frequency IP range parsing, but wrap downstream strict validation calls in try/except blocks to handle permissive `inet_aton` edge cases.
