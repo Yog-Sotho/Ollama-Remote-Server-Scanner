@@ -57,6 +57,11 @@
 **Learning:** Defensive patterns like `(data.get('key') or [])` are insufficient if the value exists but is of an unexpected type. Slicing an integer or iterating over a boolean causes immediate crashes.
 **Prevention:** Use explicit `isinstance(data.get('key'), list)` checks before attempting to slice or iterate over expected collection fields in untrusted JSON responses. Additionally, validate that numeric fields (like `size`) are of the expected type before performing arithmetic operations.
 
+## 2026-06-10 - [Security Enhancement] Defensive List Item Validation
+**Vulnerability:** The scanner could crash (DoS) if a remote server returned a JSON list containing non-dictionary elements, leading to `AttributeError` when the display logic attempted to access dictionary methods on the items.
+**Learning:** Checking the type of the collection (e.g., `isinstance(data, list)`) is insufficient if the code assumes all elements within that collection share the same structure. Malicious actors can mix types to trigger crashes in downstream processing.
+**Prevention:** Always use list comprehensions with type filters (e.g., `[m for m in items if isinstance(m, dict)]`) when parsing untrusted collections to ensure every item is of the expected type before it reaches the processing or display layers.
+
 ## 2026-05-28 - [Security Enhancement] Comprehensive Terminal Output Spoofing Protection
 **Vulnerability:** A malicious remote server could return newlines (`\n`) or tabs (`\t`) in model names or metadata, allowing it to inject arbitrary lines into the scanner's CLI output to spoof status messages or hide results.
 **Learning:** Initial non-printable character filters that explicitly exempt `\n` and `\t` for "safe whitespace" create a multi-line injection vector in CLI tools.
